@@ -3,11 +3,13 @@ import unittest
 import numpy as np
 
 from model.build import (
+    QuarterbackRating,
     Rating,
     bounded_means,
     calibrated_probs,
     fit_forecast_model,
     freeze_published_forecasts,
+    summarize,
 )
 
 
@@ -36,6 +38,15 @@ class ForecastMathTests(unittest.TestCase):
         self.assertLess(rating.defn, 0.0)
         self.assertNotEqual(abs(rating.off), abs(rating.defn))
 
+    def test_quarterback_rating_is_shrunk_and_regressed(self) -> None:
+        rating = QuarterbackRating()
+        rating.update(passing_epa=12.0, attempts=30.0, sacks=2.0)
+        learned = rating.epa
+        self.assertGreater(learned, 0.0)
+        self.assertLess(learned, 12.0 / 32.0)
+        rating.regress_season()
+        self.assertLess(rating.epa, learned)
+
     def test_fitted_model_produces_valid_calibrated_probabilities(self) -> None:
         training = []
         for index in range(600):
@@ -44,16 +55,28 @@ class ForecastMathTests(unittest.TestCase):
             training.append(
                 {
                     "season": 2010 + index // 100,
-                    "marginFeatures": [1.0, 1.0, strength, strength / 4, 0.0],
-                    "totalFeatures": [1.0, float(index % 9), abs(strength) / 4],
+                    "marginFeatures": [
+                        1.0,
+                        1.0,
+                        strength,
+                        strength / 4,
+                        0.0,
+                        strength / 8,
+                    ],
+                    "totalFeatures": [
+                        1.0,
+                        float(index % 9),
+                        abs(strength) / 4,
+                        strength / 8,
+                    ],
                     "margin": margin,
                     "total": 44.0 + (index % 9),
                     "homeOutcome": 1.0 if margin > 0 else 0.0,
                 }
             )
         model = fit_forecast_model(training)
-        self.assertEqual(model["margin"].shape, (5,))
-        self.assertEqual(model["total"].shape, (3,))
+        self.assertEqual(model["margin"].shape, (6,))
+        self.assertEqual(model["total"].shape, (4,))
         self.assertEqual(model["logistic"].shape, (2,))
         home, tie = calibrated_probs(3.0, model["logistic"])
         self.assertTrue(np.isfinite(model["logistic"]).all())
@@ -165,7 +188,38 @@ class ForecastMathTests(unittest.TestCase):
         game = weeks[0]["games"][0]
         self.assertEqual(game["prediction"], new_prediction)
         self.assertEqual(game["recordKind"], "backtest")
-        self.assertEqual(game["forecastModelVersion"], "yardline-3.0")
+        self.assertEqual(game["forecastModelVersion"], "yardline-3.1")
+
+    def test_accuracy_uses_raw_means_and_paired_market_cohort(self) -> None:
+        game = {
+            "season": 2025,
+            "week": 1,
+            "prediction": {
+                "homeScore": 24,
+                "awayScore": 20,
+                "homeWinProb": 0.6,
+                "tieProb": 0.0,
+                "spreadHome": -4.0,
+                "total": 44.0,
+                "meanMargin": 3.6,
+                "meanTotal": 43.7,
+                "homeRange": [6, 42],
+                "awayRange": [2, 38],
+            },
+            "actual": {
+                "homeScore": 27,
+                "awayScore": 20,
+                "margin": 7,
+                "total": 47,
+            },
+            "postedHomeWinProb": 0.65,
+        }
+        overall = summarize([game])["overall"]
+        self.assertEqual(overall["marginMae"], 3.4)
+        self.assertEqual(overall["totalMae"], 3.3)
+        self.assertEqual(overall["marketGames"], 1)
+        self.assertEqual(overall["pairedBrier"], 0.16)
+        self.assertEqual(overall["marketBrier"], 0.122)
 
 
 if __name__ == "__main__":

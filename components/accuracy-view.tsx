@@ -79,11 +79,18 @@ function SliceView({ slice, seasonLabel }: { slice: AccuracySlice; seasonLabel?:
           <CardDescription>{honesty(slice)}</CardDescription>
         </CardHeader>
         <CardContent>
-          <p className="font-display text-3xl tabular-nums text-uncertainty">
-            {slice.marketBrier == null ? "No price" : slice.marketBrier.toFixed(3)}
-          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ComparisonValue
+              label="Posted line"
+              value={slice.marketBrier}
+            />
+            <ComparisonValue
+              label="Yardline on same games"
+              value={slice.pairedBrier}
+            />
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Posted-line Brier from the nflverse moneyline, vig removed. Lower is sharper. This is a comparison, not a claim.
+            Posted-line Brier from the nflverse moneyline, vig removed. Both values use the same {slice.marketGames} games. Lower is sharper.
           </p>
         </CardContent>
       </Card>
@@ -96,10 +103,21 @@ function honesty(slice: AccuracySlice) {
     slice.brier <= 0.25
       ? `Yardline’s Brier on this slice is ${slice.brier.toFixed(3)}, inside a coin flip at 0.250.`
       : `Yardline’s Brier on this slice is ${slice.brier.toFixed(3)}, the wrong side of a coin flip at 0.250.`
-  if (slice.marketBrier == null) {
+  if (slice.marketBrier == null || slice.pairedBrier == null) {
     return `${coin} No posted-line prices were available to compare.`
   }
-  return `${coin} The nflverse posted line is ${slice.marketBrier.toFixed(3)}. Yardline does not claim to beat the market.`
+  return `${coin} On the identical priced-game cohort, Yardline is ${slice.pairedBrier.toFixed(3)} and the posted line is ${slice.marketBrier.toFixed(3)}. Yardline does not claim to beat the market.`
+}
+
+function ComparisonValue({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="font-display text-3xl tabular-nums text-uncertainty">
+        {value == null ? "No price" : value.toFixed(3)}
+      </p>
+    </div>
+  )
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {

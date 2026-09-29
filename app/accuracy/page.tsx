@@ -19,7 +19,7 @@ export default function AccuracyPage() {
       <PageHeader
         eyebrow="Record"
         title="Checked, then updated"
-        lede={`Each game was scored with ratings from earlier weeks. ${overall.games} finished games are in the inspectable record, beginning in 2024. The 2023 season warms up the ratings but is not counted. Straight-up ${(overall.straightUp * 100).toFixed(1)}%, margin MAE ${overall.marginMae.toFixed(2)}, Brier ${overall.brier.toFixed(3)}.`}
+        lede={`Each game was scored with ratings from earlier weeks and coefficients from earlier seasons. ${overall.games} finished games are in the inspectable record, beginning in 2024; earlier seasons train and warm up the model but are not counted. Straight-up ${(overall.straightUp * 100).toFixed(1)}%, margin MAE ${overall.marginMae.toFixed(2)}, Brier ${overall.brier.toFixed(3)}.`}
       />
       <AccuracyView overall={file.accuracy.overall} bySeason={file.accuracy.bySeason} />
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">

@@ -68,6 +68,8 @@ export type Prediction = {
   overtime: boolean
   spreadHome: number
   total: number
+  meanMargin?: number
+  meanTotal?: number
   homeRange: [number, number]
   awayRange: [number, number]
   rawMargin: number
@@ -131,6 +133,8 @@ export type AccuracySlice = {
   brier: number
   withinRange: number
   marketBrier: number | null
+  pairedBrier: number | null
+  marketGames: number
   season?: number
   week?: number
 }

@@ -38,7 +38,7 @@ SEASONS = [2023, 2024, 2025, 2026]
 TRAINING_SEASONS = list(range(2010, 2027))
 PUBLISH_FROM = 2024
 PLAYS = 60.0
-MODEL_VERSION = "yardline-3.0"
+MODEL_VERSION = "yardline-3.1"
 # Plays of memory carried into a new season. About one or two games, so a
 # three-game stretch can outweigh last year without letting one Sunday rewrite it.
 SEASON_PRIOR_PLAYS = 80.0
@@ -140,6 +140,33 @@ class Rating:
             points_against - league_points
         )
         self.games += 1
+
+
+class QuarterbackRating:
+    """Shrunk passing EPA for the most recent starter known before a game."""
+
+    def __init__(self) -> None:
+        self.epa = 0.0
+        self.plays = 100.0
+
+    def regress_season(self) -> None:
+        self.epa *= 0.70
+        self.plays = max(100.0, self.plays * 0.60)
+
+    def update(
+        self,
+        passing_epa: float,
+        attempts: float,
+        sacks: float,
+    ) -> None:
+        passing_epa = passing_epa if math.isfinite(passing_epa) else 0.0
+        attempts = attempts if math.isfinite(attempts) else 0.0
+        sacks = sacks if math.isfinite(sacks) else 0.0
+        game_plays = max(attempts + sacks, 1.0)
+        game_epa = passing_epa / game_plays
+        alpha = game_plays / (game_plays + self.plays)
+        self.epa = (1.0 - alpha) * self.epa + alpha * game_epa
+        self.plays = min(300.0, self.plays + game_plays * 0.2)
 
 
 def parse_wind(value: object) -> int | None:
@@ -351,8 +378,8 @@ def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
     """Fit only completed prior-season rows; never use the season being scored."""
     if len(training) < 500:
         return {
-            "margin": np.array([0.0, 1.7, 0.30, 2.5, 0.5]),
-            "total": np.array([45.0, 0.35, -0.2]),
+            "margin": np.array([0.0, 1.7, 0.30, 2.5, 0.5, 0.0]),
+            "total": np.array([45.0, 0.35, -0.2, 0.0]),
             "logistic": np.array([0.0, 0.13]),
         }
     margin_beta = fit_ridge(
@@ -404,6 +431,8 @@ def forecast_features(
     row: dict,
     home_rating: Rating,
     away_rating: Rating,
+    home_qb: QuarterbackRating,
+    away_qb: QuarterbackRating,
     league_points: float,
 ) -> tuple[list[float], list[float]]:
     field = 0.0 if row["location"] == "Neutral" else 1.0
@@ -415,9 +444,11 @@ def forecast_features(
     away_rest = float(row.get("away_rest") or 7)
     rest_edge = float(np.clip(home_rest - away_rest, -7, 7)) / 7.0
     elo_edge = (home_rating.elo - away_rating.elo) / 100.0
+    qb_edge = PLAYS * (home_qb.epa - away_qb.epa)
+    qb_total = PLAYS * (home_qb.epa + away_qb.epa)
     return (
-        [1.0, field, score_margin, elo_edge, rest_edge],
-        [1.0, score_total - 45.0, abs(elo_edge)],
+        [1.0, field, score_margin, elo_edge, rest_edge, qb_edge],
+        [1.0, score_total - 45.0, abs(elo_edge), qb_total],
     )
 
 
@@ -429,7 +460,7 @@ def main() -> None:
     pbp = nfl.load_pbp(SEASONS)
     if "season_type" in pbp.columns:
         pbp = pbp.filter(pl.col("season_type") == "REG")
-    players = nfl.load_player_stats(SEASONS)
+    players = nfl.load_player_stats(TRAINING_SEASONS)
     if "season_type" in players.columns:
         players = players.filter(pl.col("season_type") == "REG")
     injuries = nfl.load_injuries([2024, 2025, 2026])
@@ -468,6 +499,8 @@ def main() -> None:
         "position",
         "attempts",
         "passing_yards",
+        "passing_epa",
+        "sacks_suffered",
         "carries",
         "rushing_yards",
     ]
@@ -488,6 +521,8 @@ def main() -> None:
 
     recent: dict[str, list[dict]] = {abbr: [] for abbr in TEAMS}
     ratings = {abbr: Rating() for abbr in TEAMS}
+    quarterback_ratings: dict[str, QuarterbackRating] = {}
+    last_quarterback: dict[str, str] = {}
     training_rows: list[dict] = []
     current_model = fit_forecast_model(training_rows)
     home_field = float(current_model["margin"][1])
@@ -513,6 +548,8 @@ def main() -> None:
         if last_season is not None and season != last_season:
             for rating in ratings.values():
                 rating.regress_season()
+            for quarterback in quarterback_ratings.values():
+                quarterback.regress_season()
             for abbr in recent:
                 recent[abbr] = recent[abbr][-6:]
         if season != last_season:
@@ -529,6 +566,14 @@ def main() -> None:
                 row,
                 ratings[row["home_team"]],
                 ratings[row["away_team"]],
+                quarterback_ratings.get(
+                    last_quarterback.get(row["home_team"], ""),
+                    QuarterbackRating(),
+                ),
+                quarterback_ratings.get(
+                    last_quarterback.get(row["away_team"], ""),
+                    QuarterbackRating(),
+                ),
                 league_points,
             )
             features_by_id[row["game_id"]] = (margin_features, total_features)
@@ -570,6 +615,8 @@ def main() -> None:
                     epa_lookup,
                     recent,
                     player_index,
+                    quarterback_ratings,
+                    last_quarterback,
                     league_points,
                 )
                 league_points_sum += float(row["home_score"]) + float(
@@ -713,6 +760,14 @@ def forecast_game(
             "points": round(model["margin"][4] * margin_features[4], 1),
             "detail": "Difference in days of rest, capped at one week either way.",
         },
+        {
+            "label": "Quarterback form",
+            "points": round(model["margin"][5] * margin_features[5], 1),
+            "detail": (
+                "The most recent starter's passing EPA, shrunk toward league "
+                "average and updated only after each completed week."
+            ),
+        },
     ]
     if not neutral:
         adjustments.append(
@@ -733,7 +788,7 @@ def forecast_game(
     if qb_home_points or qb_away_points:
         adjustments.append(
             {
-                "label": "Quarterback",
+                "label": "Quarterback availability",
                 "points": round(qb_home_points - qb_away_points, 1),
                 "detail": qb_note or "Starter availability changed the expected points.",
             }
@@ -751,6 +806,8 @@ def forecast_game(
         "overtime": overtime,
         "spreadHome": round_half(-expected_margin),
         "total": round_half(home_mean + away_mean),
+        "meanMargin": round(expected_margin, 4),
+        "meanTotal": round(home_mean + away_mean, 4),
         "homeRange": score_band(home_mean),
         "awayRange": score_band(away_mean),
         "rawMargin": round(raw_margin, 2),
@@ -804,7 +861,7 @@ def forecast_game(
         "postedHomeWinProb": (
             None
             if no_vig(row["home_moneyline"], row["away_moneyline"]) is None
-            else round(no_vig(row["home_moneyline"], row["away_moneyline"]), 3)
+            else round(no_vig(row["home_moneyline"], row["away_moneyline"]), 6)
         ),
     }
 
@@ -1034,6 +1091,8 @@ def update_after_game(
     epa_lookup,
     recent,
     player_index,
+    quarterback_ratings,
+    last_quarterback,
     league_points,
 ) -> None:
     home = ratings[row["home_team"]]
@@ -1066,6 +1125,19 @@ def update_after_game(
             def_epa, def_plays = allowed
             ratings[team].update(off_epa, def_epa, off_plays, def_plays)
         rows = player_index.get((row["season"], row["week"], team), [])
+        passers = [item for item in rows if (item["attempts"] or 0) > 0]
+        if passers:
+            starter = max(passers, key=lambda item: item["attempts"] or 0)
+            player_id = starter["player_id"]
+            quarterback = quarterback_ratings.setdefault(
+                player_id, QuarterbackRating()
+            )
+            quarterback.update(
+                float(starter["passing_epa"] or 0.0),
+                float(starter["attempts"] or 0.0),
+                float(starter["sacks_suffered"] or 0.0),
+            )
+            last_quarterback[team] = player_id
         recent[team].append(
             {
                 "passers": [
@@ -1149,12 +1221,15 @@ def summarize(games: list[dict]) -> dict:
                 "brier": 0,
                 "withinRange": 0,
                 "marketBrier": None,
+                "pairedBrier": None,
+                "marketGames": 0,
             }
         correct = 0
         margin_err = []
         total_err = []
         brier = []
         market = []
+        paired = []
         covered = 0
         decided = 0
         for game in subset:
@@ -1170,14 +1245,17 @@ def summarize(games: list[dict]) -> dict:
             elif margin == 0:
                 correct += 0.5
             decided += 1
-            margin_err.append(abs(margin - (-pred["spreadHome"])))
-            total_err.append(abs(actual["total"] - pred["total"]))
+            predicted_margin = pred.get("meanMargin", -pred["spreadHome"])
+            predicted_total = pred.get("meanTotal", pred["total"])
+            margin_err.append(abs(margin - predicted_margin))
+            total_err.append(abs(actual["total"] - predicted_total))
             outcome = 1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
             # Binary Brier treats a final tie as half a home win. Match that
             # target by assigning half of the explicit tie probability to home.
             home_equivalent = pred["homeWinProb"] + 0.5 * pred["tieProb"]
             brier.append((home_equivalent - outcome) ** 2)
             if game["postedHomeWinProb"] is not None:
+                paired.append((home_equivalent - outcome) ** 2)
                 market.append((game["postedHomeWinProb"] - outcome) ** 2)
             home_low, home_high = pred["homeRange"]
             away_low, away_high = pred["awayRange"]
@@ -1191,6 +1269,8 @@ def summarize(games: list[dict]) -> dict:
             "brier": round(float(np.mean(brier)), 3),
             "withinRange": round(covered / len(subset), 3),
             "marketBrier": None if not market else round(float(np.mean(market)), 3),
+            "pairedBrier": None if not paired else round(float(np.mean(paired)), 3),
+            "marketGames": len(market),
         }
 
     by_season = {}
