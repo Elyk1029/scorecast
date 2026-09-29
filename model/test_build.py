@@ -3,12 +3,15 @@ import unittest
 import numpy as np
 
 from model.build import (
+    DEFAULT_PLAYER_WIDTHS,
     QuarterbackRating,
     Rating,
     bounded_means,
     calibrated_probs,
+    empirical_player_widths,
     fit_forecast_model,
     freeze_published_forecasts,
+    project_players,
     score_features,
     summarize,
 )
@@ -287,6 +290,81 @@ class ForecastMathTests(unittest.TestCase):
         self.assertEqual(model["home"].shape, (8,))
         self.assertEqual(model["away"].shape, (8,))
         self.assertEqual(model["logistic"].shape, (2,))
+
+    def _player_history(self) -> list[dict]:
+        games = []
+        for attempts in (10, 10, 10, 10, 10, 10, 40):
+            games.append(
+                {
+                    "passers": [
+                        {
+                            "player_id": "qb",
+                            "name": "Starter",
+                            "attempts": attempts,
+                            "passing_yards": attempts * 7,
+                        }
+                    ],
+                    "rushers": [
+                        {
+                            "player_id": "rb",
+                            "name": "Back",
+                            "position": "RB",
+                            "carries": 12,
+                            "rushing_yards": 48,
+                        }
+                    ],
+                }
+            )
+        return games
+
+    def test_recent_start_pulls_the_passing_line_up(self) -> None:
+        row = {"season": 2024, "week": 1}
+        history = self._player_history()
+        current, _notes = project_players(history, row, "BUF", {}, False)
+        previous, _notes = project_players(
+            history, row, "BUF", {}, False, formula="previous"
+        )
+        self.assertGreater(current["qb"]["attempts"], previous["qb"]["attempts"])
+
+    def test_opponent_yards_allowed_scales_yards_not_volume(self) -> None:
+        row = {"season": 2024, "week": 1}
+        history = self._player_history()
+        base, _notes = project_players(history, row, "BUF", {}, False)
+        softer, _notes = project_players(
+            history,
+            row,
+            "BUF",
+            {},
+            False,
+            pass_factor=1.1,
+            rush_factor=1.1,
+        )
+        untouched, _notes = project_players(
+            history,
+            row,
+            "BUF",
+            {},
+            False,
+            formula="previous",
+            pass_factor=1.5,
+            rush_factor=1.5,
+        )
+        plain, _notes = project_players(
+            history, row, "BUF", {}, False, formula="previous"
+        )
+        self.assertEqual(base["qb"]["attempts"], softer["qb"]["attempts"])
+        self.assertEqual(base["rb"]["carries"], softer["rb"]["carries"])
+        self.assertGreater(softer["qb"]["yards"], base["qb"]["yards"])
+        self.assertGreater(softer["rb"]["yards"], base["rb"]["yards"])
+        self.assertEqual(untouched["qb"]["yards"], plain["qb"]["yards"])
+        self.assertAlmostEqual(base["qb"]["attemptsHigh"] - base["qb"]["attempts"], 8.0)
+
+    def test_player_window_stays_fixed_until_enough_misses_exist(self) -> None:
+        thin = {key: [1.0] for key in ("attempts", "pass", "carries", "rush")}
+        self.assertEqual(empirical_player_widths(thin), DEFAULT_PLAYER_WIDTHS)
+        ready = {key: [float(index) for index in range(400)] for key in thin}
+        widths = empirical_player_widths(ready)
+        self.assertGreater(widths[1], 70)
 
 
 if __name__ == "__main__":

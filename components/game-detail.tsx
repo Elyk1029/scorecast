@@ -315,7 +315,7 @@ function PlayerSheet({ game, file }: { game: Game; file: SeasonFile }) {
       <CardHeader>
         <CardTitle>Player lines</CardTitle>
         <CardDescription>
-          Volume first. The slate bar is a fixed window around the median, the amber tick is the median, and the ice tick is the actual when the game is final.
+          Volume first. The slate bar covers about four earlier results in five, the amber tick is the median, and the ice tick is the actual when the game is final.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

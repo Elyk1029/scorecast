@@ -50,6 +50,14 @@ WIN_SHRINK = 0.28
 # holdouts; 100 was nearly identical and 300 had the lower combined error.
 SCORE_PENALTY = 300.0
 LOGISTIC_PENALTY = 10.0
+# Player lines. A three-game half-life over the last eight games, chosen on
+# 2021–2023 and confirmed on 2024–2026. The window is the 80th percentile of
+# earlier absolute misses, so about four lines in five land inside it.
+PLAYER_HALF_LIFE = 3.0
+PLAYER_WINDOW = 8
+PASS_DEFENSE_MEMORY = 150.0
+RUSH_DEFENSE_MEMORY = 80.0
+DEFAULT_PLAYER_WIDTHS = (8.0, 70.0, 5.0, 32.0)
 
 # City, nickname, hours behind Eastern.
 TEAMS: dict[str, tuple[str, str, int]] = {
@@ -169,6 +177,50 @@ class QuarterbackRating:
         alpha = game_plays / (game_plays + self.plays)
         self.epa = (1.0 - alpha) * self.epa + alpha * game_epa
         self.plays = min(300.0, self.plays + game_plays * 0.2)
+
+
+class OpponentDefense:
+    """Yards per play allowed, known before the next kickoff."""
+
+    def __init__(self) -> None:
+        self.ypa = 7.0
+        self.ypc = 4.3
+        self.n_pass = 0.0
+        self.n_rush = 0.0
+        self.games = 0
+
+    def regress_season(self) -> None:
+        self.ypa = 0.55 * self.ypa + 0.45 * 7.0
+        self.ypc = 0.55 * self.ypc + 0.45 * 4.3
+        self.n_pass *= 0.55
+        self.n_rush *= 0.55
+        self.games = 0
+
+    def update(self, attempts: float, yards: float, carries: float, rush_yards: float) -> None:
+        alpha = 0.18 if self.games >= 3 else 0.25
+        if attempts > 0:
+            self.ypa = (1 - alpha) * self.ypa + alpha * (yards / attempts)
+            self.n_pass = (1 - alpha) * self.n_pass + alpha * attempts
+        if carries > 0:
+            self.ypc = (1 - alpha) * self.ypc + alpha * (rush_yards / carries)
+            self.n_rush = (1 - alpha) * self.n_rush + alpha * carries
+        self.games += 1
+
+    def pass_factor(self, league_ypa: float) -> float:
+        if league_ypa <= 0:
+            return 1.0
+        rate = (self.n_pass * self.ypa + PASS_DEFENSE_MEMORY * league_ypa) / (
+            self.n_pass + PASS_DEFENSE_MEMORY
+        )
+        return rate / league_ypa
+
+    def rush_factor(self, league_ypc: float) -> float:
+        if league_ypc <= 0:
+            return 1.0
+        rate = (self.n_rush * self.ypc + RUSH_DEFENSE_MEMORY * league_ypc) / (
+            self.n_rush + RUSH_DEFENSE_MEMORY
+        )
+        return rate / league_ypc
 
 
 def parse_wind(value: object) -> int | None:
@@ -567,6 +619,7 @@ def main() -> None:
                 injury_index[(row["season"], row["week"], team, row["gsis_id"])] = status
 
     recent: dict[str, list[dict]] = {abbr: [] for abbr in TEAMS}
+    defenses = {abbr: OpponentDefense() for abbr in TEAMS}
     ratings = {abbr: Rating() for abbr in TEAMS}
     quarterback_ratings: dict[str, QuarterbackRating] = {}
     last_quarterback: dict[str, str] = {}
@@ -575,6 +628,14 @@ def main() -> None:
     home_field = home_field_edge(current_model)
     league_points_sum = 22.5 * 200.0
     league_team_games = 200.0
+    league_pass_sum = 7.0 * 200.0
+    league_pass_n = 200.0
+    league_rush_sum = 4.3 * 200.0
+    league_rush_n = 200.0
+    width_history = PlayerLineScore()
+    previous_lines = PlayerLineScore()
+    current_lines = PlayerLineScore()
+    player_widths = DEFAULT_PLAYER_WIDTHS
     weeks_out: list[dict] = []
     learned: list[dict] = []
     last_season = None
@@ -597,14 +658,26 @@ def main() -> None:
                 rating.regress_season()
             for quarterback in quarterback_ratings.values():
                 quarterback.regress_season()
+            for defense in defenses.values():
+                defense.regress_season()
             for abbr in recent:
                 recent[abbr] = recent[abbr][-6:]
         if season != last_season:
             current_model = fit_forecast_model(training_rows)
             home_field = home_field_edge(current_model)
+            player_widths = empirical_player_widths(
+                {
+                    "attempts": width_history.attempts,
+                    "pass": width_history.pass_yards,
+                    "carries": width_history.carries,
+                    "rush": width_history.rush_yards,
+                }
+            )
         last_season = season
 
         league_points = league_points_sum / league_team_games
+        league_ypa = league_pass_sum / league_pass_n
+        league_ypc = league_rush_sum / league_rush_n
         before = {abbr: ratings[abbr].snapshot() for abbr in TEAMS}
         games_out = []
         for row in week_rows[(season, week)]:
@@ -629,9 +702,37 @@ def main() -> None:
                 current_model,
                 home_features,
                 away_features,
+                player_widths=player_widths,
+                home_pass_factor=defenses[row["away_team"]].pass_factor(league_ypa),
+                home_rush_factor=defenses[row["away_team"]].rush_factor(league_ypc),
+                away_pass_factor=defenses[row["home_team"]].pass_factor(league_ypa),
+                away_rush_factor=defenses[row["home_team"]].rush_factor(league_ypc),
             )
             games_out.append(game)
             if game["actual"] is not None:
+                for side in ("home", "away"):
+                    width_history.observe(
+                        game["players"][side],
+                        game["actual"]["players"][side],
+                    )
+                if season >= PUBLISH_FROM:
+                    for side, team in (("home", row["home_team"]), ("away", row["away_team"])):
+                        current_lines.observe(
+                            game["players"][side],
+                            game["actual"]["players"][side],
+                        )
+                        legacy_players, _legacy_notes = project_players(
+                            recent.get(team, []),
+                            row,
+                            team,
+                            injury_index,
+                            use_injuries=False,
+                            formula="previous",
+                        )
+                        previous_lines.observe(
+                            legacy_players,
+                            matched_player_line(player_index, row, team, legacy_players),
+                        )
                 margin = float(game["actual"]["margin"])
                 training_rows.append(
                     {
@@ -666,6 +767,20 @@ def main() -> None:
                     row["away_score"]
                 )
                 league_team_games += 2.0
+                for team, opponent in (
+                    (row["home_team"], row["away_team"]),
+                    (row["away_team"], row["home_team"]),
+                ):
+                    attempts, yards, carries, rush_yards = team_play_volume(
+                        player_index, row["season"], row["week"], team
+                    )
+                    defenses[opponent].update(attempts, yards, carries, rush_yards)
+                    if attempts > 0:
+                        league_pass_sum += yards / attempts
+                        league_pass_n += 1
+                    if carries > 0:
+                        league_rush_sum += rush_yards / carries
+                        league_rush_n += 1
 
         if season >= PUBLISH_FROM:
             weeks_out.append(
@@ -722,12 +837,17 @@ def main() -> None:
         "teams": {abbr: team_payload(abbr) for abbr in TEAMS},
         "weeks": weeks_out,
         "accuracy": summarize(accuracy_games),
+        "playerLines": {
+            "previous": previous_lines.payload(),
+            "current": current_lines.payload(),
+        },
         "learned": learned[-8:],
         "notes": [
             "Forecasts use only games already played.",
             "The posted line is a comparison, not an input.",
             "Weather and travel are shown as context and do not change the score in this version.",
             "Score coefficients and win calibration are fit on completed prior seasons only.",
+            "Player lines weight the last eight games and the opponent's yards per play. The previous four-game line is kept only for comparison.",
             "A rounded tie indicates likely overtime. About six percent of regular-season overtimes still end tied.",
             "A locked game keeps the forecast that was published before kickoff.",
             "This is research, not a recommendation to bet.",
@@ -746,6 +866,21 @@ def main() -> None:
         f"margin MAE {overall['marginMae']:.2f} total MAE {overall['totalMae']:.2f} "
         f"home {overall['homeScoreMae']:.2f} away {overall['awayScoreMae']:.2f} "
         f"Brier {overall['brier']:.3f}"
+    )
+    lines = payload["playerLines"]
+    print(
+        "Player lines previous "
+        f"att {lines['previous']['attemptsMae']:.2f} "
+        f"pass {lines['previous']['passYardsMae']:.1f} "
+        f"car {lines['previous']['carriesMae']:.2f} "
+        f"rush {lines['previous']['rushYardsMae']:.1f}"
+    )
+    print(
+        "Player lines current "
+        f"att {lines['current']['attemptsMae']:.2f} "
+        f"pass {lines['current']['passYardsMae']:.1f} "
+        f"car {lines['current']['carriesMae']:.2f} "
+        f"rush {lines['current']['rushYardsMae']:.1f}"
     )
 
 
@@ -770,6 +905,11 @@ def forecast_game(
     model: dict[str, np.ndarray],
     home_features: list[float],
     away_features: list[float],
+    player_widths: tuple[float, float, float, float] = DEFAULT_PLAYER_WIDTHS,
+    home_pass_factor: float = 1.0,
+    home_rush_factor: float = 1.0,
+    away_pass_factor: float = 1.0,
+    away_rush_factor: float = 1.0,
 ) -> dict:
     home = row["home_team"]
     away = row["away_team"]
@@ -888,10 +1028,24 @@ def forecast_game(
         "rawMargin": round(raw_margin, 2),
     }
     home_players, home_player_notes = project_players(
-        recent.get(home, []), row, home, injury_index, use_injuries=upcoming
+        recent.get(home, []),
+        row,
+        home,
+        injury_index,
+        use_injuries=upcoming,
+        pass_factor=home_pass_factor,
+        rush_factor=home_rush_factor,
+        widths=player_widths,
     )
     away_players, away_player_notes = project_players(
-        recent.get(away, []), row, away, injury_index, use_injuries=upcoming
+        recent.get(away, []),
+        row,
+        away,
+        injury_index,
+        use_injuries=upcoming,
+        pass_factor=away_pass_factor,
+        rush_factor=away_rush_factor,
+        widths=player_widths,
     )
     context.extend(home_player_notes)
     context.extend(away_player_notes)
@@ -1003,30 +1157,35 @@ def unavailable(
     return status in {"Out", "Doubtful"}
 
 
-def project_players(
-    games: list[dict],
-    row: dict,
-    team: str,
-    injury_index: dict,
-    use_injuries: bool,
-) -> tuple[dict, list[str]]:
-    notes: list[str] = []
-    recent_games = games[-4:]
+def empirical_player_widths(errors: dict[str, list[float]]) -> tuple[float, float, float, float]:
+    """Half-width that covered 80 percent of earlier absolute misses."""
+    keys = ("attempts", "pass", "carries", "rush")
+    if any(len(errors[key]) < 400 for key in keys):
+        return DEFAULT_PLAYER_WIDTHS
+    return tuple(float(np.quantile(errors[key], 0.80)) for key in keys)  # type: ignore[return-value]
+
+
+def _recent_player_table(games: list[dict], weighted: bool) -> tuple[dict, dict]:
+    """Sum a player's recent work. Weights decay so the latest game counts fully."""
+    count = len(games)
     passers: dict[str, dict] = {}
     rushers: dict[str, dict] = {}
-    team_attempts = []
-    team_carries = []
-    for game in recent_games:
-        team_attempts.append(sum((p["attempts"] or 0) for p in game["passers"]))
-        team_carries.append(sum((p["carries"] or 0) for p in game["rushers"]))
+    for index, game in enumerate(games):
+        weight = 0.5 ** ((count - 1 - index) / PLAYER_HALF_LIFE) if weighted else 1.0
         for player in game["passers"]:
             item = passers.setdefault(
                 player["player_id"],
-                {"id": player["player_id"], "name": player["name"], "attempts": 0, "yards": 0, "games": 0},
+                {
+                    "id": player["player_id"],
+                    "name": player["name"],
+                    "attempts": 0.0,
+                    "yards": 0.0,
+                    "games": 0.0,
+                },
             )
-            item["attempts"] += player["attempts"] or 0
-            item["yards"] += player["passing_yards"] or 0
-            item["games"] += 1
+            item["attempts"] += weight * (player["attempts"] or 0)
+            item["yards"] += weight * (player["passing_yards"] or 0)
+            item["games"] += weight
         for player in game["rushers"]:
             if player["position"] not in {"RB", "FB", "QB"}:
                 continue
@@ -1036,14 +1195,44 @@ def project_players(
                     "id": player["player_id"],
                     "name": player["name"],
                     "position": player["position"],
-                    "carries": 0,
-                    "yards": 0,
-                    "games": 0,
+                    "carries": 0.0,
+                    "yards": 0.0,
+                    "games": 0.0,
                 },
             )
-            item["carries"] += player["carries"] or 0
-            item["yards"] += player["rushing_yards"] or 0
-            item["games"] += 1
+            item["carries"] += weight * (player["carries"] or 0)
+            item["yards"] += weight * (player["rushing_yards"] or 0)
+            item["games"] += weight
+    return passers, rushers
+
+
+def project_players(
+    games: list[dict],
+    row: dict,
+    team: str,
+    injury_index: dict,
+    use_injuries: bool,
+    formula: str = "current",
+    pass_factor: float = 1.0,
+    rush_factor: float = 1.0,
+    widths: tuple[float, float, float, float] = DEFAULT_PLAYER_WIDTHS,
+) -> tuple[dict, list[str]]:
+    """Quarterback and back lines from games already played.
+
+    ``current`` uses eight games, a three-game half-life, and the opponent's
+    recent yards per play. ``previous`` is the last four games at equal weight
+    with no opponent adjustment, kept so the record can show the comparison.
+    """
+    notes: list[str] = []
+    current = formula == "current"
+    recent_games = games[-PLAYER_WINDOW:] if current else games[-4:]
+    attempt_width, pass_width, carry_width, rush_width = (
+        widths if current else DEFAULT_PLAYER_WIDTHS
+    )
+    if not current:
+        pass_factor = 1.0
+        rush_factor = 1.0
+    passers, rushers = _recent_player_table(recent_games, weighted=current)
 
     qb = None
     if passers:
@@ -1056,7 +1245,8 @@ def project_players(
                 continue
             recent_order.append(leader["player_id"])
         ranked_ids = recent_order + [
-            item["id"] for item in sorted(passers.values(), key=lambda item: item["attempts"], reverse=True)
+            item["id"]
+            for item in sorted(passers.values(), key=lambda item: item["attempts"], reverse=True)
             if item["id"] not in recent_order
         ]
         ranked = [passers[item_id] for item_id in ranked_ids if item_id in passers]
@@ -1073,17 +1263,17 @@ def project_players(
             )
         if starter and starter["attempts"] >= 8:
             attempts = shrunk_rate(starter["attempts"], starter["games"], 32, 2)
-            ypa = shrunk_rate(starter["yards"], starter["attempts"], 7.0, 80)
+            ypa = shrunk_rate(starter["yards"], starter["attempts"], 7.0, 80) * pass_factor
             yards = attempts * ypa
             qb = {
                 "id": starter["id"],
                 "name": starter["name"],
                 "attempts": round(attempts, 1),
-                "attemptsLow": round(max(0.0, attempts - 8), 1),
-                "attemptsHigh": round(attempts + 8, 1),
+                "attemptsLow": round(max(0.0, attempts - attempt_width), 1),
+                "attemptsHigh": round(attempts + attempt_width, 1),
                 "yards": round(yards),
-                "low": max(0, round(yards - 70)),
-                "high": round(yards + 70),
+                "low": max(0, round(yards - pass_width)),
+                "high": round(yards + pass_width),
             }
     rb = None
     ball_carriers = [item for item in rushers.values() if item["position"] in {"RB", "FB"}]
@@ -1099,10 +1289,15 @@ def project_players(
                 continue
             recent_order.append(leader["player_id"])
         ranked_ids = recent_order + [
-            item["id"] for item in sorted(pool, key=lambda item: item["carries"], reverse=True)
+            item["id"]
+            for item in sorted(pool, key=lambda item: item["carries"], reverse=True)
             if item["id"] not in recent_order
         ]
-        ranked = [next(item for item in pool if item["id"] == item_id) for item_id in ranked_ids if any(item["id"] == item_id for item in pool)]
+        ranked = [
+            next(item for item in pool if item["id"] == item_id)
+            for item_id in ranked_ids
+            if any(item["id"] == item_id for item in pool)
+        ]
         available = [
             item
             for item in ranked
@@ -1116,19 +1311,108 @@ def project_players(
             )
         if lead and lead["carries"] >= 5:
             carries = shrunk_rate(lead["carries"], lead["games"], 14, 2)
-            ypc = shrunk_rate(lead["yards"], lead["carries"], 4.3, 40)
+            ypc = shrunk_rate(lead["yards"], lead["carries"], 4.3, 40) * rush_factor
             yards = carries * ypc
             rb = {
                 "id": lead["id"],
                 "name": lead["name"],
                 "carries": round(carries, 1),
-                "carriesLow": round(max(0.0, carries - 5), 1),
-                "carriesHigh": round(carries + 5, 1),
+                "carriesLow": round(max(0.0, carries - carry_width), 1),
+                "carriesHigh": round(carries + carry_width, 1),
                 "yards": round(yards),
-                "low": max(0, round(yards - 32)),
-                "high": round(yards + 32),
+                "low": max(0, round(yards - rush_width)),
+                "high": round(yards + rush_width),
             }
     return {"qb": qb, "rb": rb}, notes
+
+
+class PlayerLineScore:
+    """Absolute errors and how often the published window covered the result."""
+
+    def __init__(self) -> None:
+        self.attempts: list[float] = []
+        self.pass_yards: list[float] = []
+        self.carries: list[float] = []
+        self.rush_yards: list[float] = []
+        self.attempt_hits = 0
+        self.pass_hits = 0
+        self.carry_hits = 0
+        self.rush_hits = 0
+
+    def observe(self, projected: dict, actual: dict | None) -> None:
+        if not actual:
+            return
+        quarterback = projected.get("qb")
+        actual_quarterback = actual.get("qb")
+        if quarterback and actual_quarterback:
+            self.attempts.append(abs(actual_quarterback["attempts"] - quarterback["attempts"]))
+            self.pass_yards.append(abs(actual_quarterback["yards"] - quarterback["yards"]))
+            if quarterback["attemptsLow"] <= actual_quarterback["attempts"] <= quarterback["attemptsHigh"]:
+                self.attempt_hits += 1
+            if quarterback["low"] <= actual_quarterback["yards"] <= quarterback["high"]:
+                self.pass_hits += 1
+        rusher = projected.get("rb")
+        actual_rusher = actual.get("rb")
+        if rusher and actual_rusher:
+            self.carries.append(abs(actual_rusher["carries"] - rusher["carries"]))
+            self.rush_yards.append(abs(actual_rusher["yards"] - rusher["yards"]))
+            if rusher["carriesLow"] <= actual_rusher["carries"] <= rusher["carriesHigh"]:
+                self.carry_hits += 1
+            if rusher["low"] <= actual_rusher["yards"] <= rusher["high"]:
+                self.rush_hits += 1
+
+    def payload(self) -> dict:
+        def mean(values: list[float]) -> float:
+            return round(float(np.mean(values)), 2) if values else 0.0
+
+        def rate(hits: int, count: int) -> float:
+            return round(hits / count, 3) if count else 0.0
+
+        return {
+            "attemptsMae": mean(self.attempts),
+            "passYardsMae": mean(self.pass_yards),
+            "carriesMae": mean(self.carries),
+            "rushYardsMae": mean(self.rush_yards),
+            "attemptsCoverage": rate(self.attempt_hits, len(self.attempts)),
+            "passYardsCoverage": rate(self.pass_hits, len(self.pass_yards)),
+            "carriesCoverage": rate(self.carry_hits, len(self.carries)),
+            "rushYardsCoverage": rate(self.rush_hits, len(self.rush_yards)),
+            "quarterbackGames": len(self.attempts),
+            "rusherGames": len(self.carries),
+        }
+
+
+def team_play_volume(player_index, season: int, week: int, team: str) -> tuple[float, float, float, float]:
+    attempts = yards = carries = rush_yards = 0.0
+    for item in player_index.get((season, week, team), []):
+        attempts += item["attempts"] or 0
+        yards += item["passing_yards"] or 0
+        carries += item["carries"] or 0
+        rush_yards += item["rushing_yards"] or 0
+    return attempts, yards, carries, rush_yards
+
+
+def matched_player_line(player_index, row, team: str, projected: dict) -> dict:
+    """Final stat line for the player who was projected, if he appears that week."""
+    rows = player_index.get((row["season"], row["week"], team), [])
+    found: dict = {"qb": None, "rb": None}
+    quarterback = projected.get("qb")
+    if quarterback:
+        match = next((item for item in rows if item["player_id"] == quarterback["id"]), None)
+        if match:
+            found["qb"] = {
+                "attempts": match["attempts"] or 0,
+                "yards": match["passing_yards"] or 0,
+            }
+    rusher = projected.get("rb")
+    if rusher:
+        match = next((item for item in rows if item["player_id"] == rusher["id"]), None)
+        if match:
+            found["rb"] = {
+                "carries": match["carries"] or 0,
+                "yards": match["rushing_yards"] or 0,
+            }
+    return found
 
 
 def actual_players(player_index, row, home_proj, away_proj) -> dict:

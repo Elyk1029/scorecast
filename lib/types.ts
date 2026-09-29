@@ -152,6 +152,24 @@ export type AccuracySlice = {
   week?: number
 }
 
+export type PlayerLineAccuracy = {
+  attemptsMae: number
+  passYardsMae: number
+  carriesMae: number
+  rushYardsMae: number
+  attemptsCoverage: number
+  passYardsCoverage: number
+  carriesCoverage: number
+  rushYardsCoverage: number
+  quarterbackGames: number
+  rusherGames: number
+}
+
+export type PlayerLineComparison = {
+  previous: PlayerLineAccuracy
+  current: PlayerLineAccuracy
+}
+
 export type LearnedWeek = {
   season: number
   week: number
@@ -171,6 +189,7 @@ export type SeasonFile = {
     bySeason: Record<string, AccuracySlice>
     weekly: AccuracySlice[]
   }
+  playerLines: PlayerLineComparison
   learned: LearnedWeek[]
   notes: string[]
 }

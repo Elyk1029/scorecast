@@ -1,9 +1,10 @@
 "use client"
 
+import { Fragment } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { formatRate } from "@/lib/format"
-import type { AccuracySlice } from "@/lib/types"
+import type { AccuracySlice, PlayerLineComparison } from "@/lib/types"
 
 export function AccuracyView({
   overall,
@@ -130,6 +131,69 @@ function SliceView({ slice, seasonLabel }: { slice: AccuracySlice; seasonLabel?:
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+export function PlayerLineComparisonCard({ lines }: { lines: PlayerLineComparison }) {
+  const rows: { label: string; previous: string; current: string }[] = [
+    ["Attempts MAE", lines.previous.attemptsMae, lines.current.attemptsMae],
+    ["Passing yards MAE", lines.previous.passYardsMae, lines.current.passYardsMae],
+    ["Carries MAE", lines.previous.carriesMae, lines.current.carriesMae],
+    ["Rushing yards MAE", lines.previous.rushYardsMae, lines.current.rushYardsMae],
+  ].map(([label, previous, current]) => ({
+    label: String(label),
+    previous: Number(previous).toFixed(2),
+    current: Number(current).toFixed(2),
+  }))
+  rows.push(
+    {
+      label: "Attempts inside the bar",
+      previous: formatRate(lines.previous.attemptsCoverage),
+      current: formatRate(lines.current.attemptsCoverage),
+    },
+    {
+      label: "Passing yards inside the bar",
+      previous: formatRate(lines.previous.passYardsCoverage),
+      current: formatRate(lines.current.passYardsCoverage),
+    },
+    {
+      label: "Carries inside the bar",
+      previous: formatRate(lines.previous.carriesCoverage),
+      current: formatRate(lines.current.carriesCoverage),
+    },
+    {
+      label: "Rushing yards inside the bar",
+      previous: formatRate(lines.previous.rushYardsCoverage),
+      current: formatRate(lines.current.rushYardsCoverage),
+    },
+  )
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Player lines</CardTitle>
+        <CardDescription>
+          Same finished games, two formulas. Previous is the last four games at equal weight and a fixed bar. Current weights the last eight games with a three-game half-life, adjusts yards for the opponent, and sets the bar from earlier misses. The score model is unchanged. Lower error is better. Coverage near 80% means the bar is doing what it claims.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-[1fr_auto_auto] items-baseline gap-x-6 gap-y-2 text-sm">
+          <span />
+          <span className="text-xs text-muted-foreground">Previous</span>
+          <span className="text-xs text-muted-foreground">Current</span>
+          {rows.map((row) => (
+            <Fragment key={row.label}>
+              <span>{row.label}</span>
+              <span className="text-right tabular-nums">{row.previous}</span>
+              <span className="text-right tabular-nums">{row.current}</span>
+            </Fragment>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Quarterbacks {lines.current.quarterbackGames.toLocaleString()}, rushers{" "}
+          {lines.current.rusherGames.toLocaleString()}. A line counts only when that projected player appears in the final stat file. Coverage is the share of those results that landed inside the published bar.
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 
