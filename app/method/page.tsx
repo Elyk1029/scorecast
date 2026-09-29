@@ -55,7 +55,7 @@ export default function MethodPage() {
           <Link href="/accuracy" className="text-forecast underline-offset-4 hover:underline">
             record
           </Link>{" "}
-          both Brier scores use the exact same priced games. The posted line has been the sharper probability. Yardline does not claim to beat the market.
+          win Brier, margin error, and total error all use exact paired cohorts. The posted line remains sharper on the current record. Yardline does not claim to beat the market.
         </Section>
       </div>
     </div>

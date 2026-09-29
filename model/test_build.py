@@ -212,6 +212,8 @@ class ForecastMathTests(unittest.TestCase):
                 "total": 47,
             },
             "postedHomeWinProb": 0.65,
+            "postedSpreadHome": -5.0,
+            "postedTotal": 45.0,
         }
         overall = summarize([game])["overall"]
         self.assertEqual(overall["marginMae"], 3.4)
@@ -219,6 +221,10 @@ class ForecastMathTests(unittest.TestCase):
         self.assertEqual(overall["marketGames"], 1)
         self.assertEqual(overall["pairedBrier"], 0.16)
         self.assertEqual(overall["marketBrier"], 0.122)
+        self.assertEqual(overall["pairedMarginMae"], 3.4)
+        self.assertEqual(overall["marketMarginMae"], 2.0)
+        self.assertEqual(overall["pairedTotalMae"], 3.3)
+        self.assertEqual(overall["marketTotalMae"], 2.0)
 
 
 if __name__ == "__main__":

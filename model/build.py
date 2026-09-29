@@ -1214,6 +1214,12 @@ def summarize(games: list[dict]) -> dict:
                 "marketBrier": None,
                 "pairedBrier": None,
                 "marketGames": 0,
+                "marketMarginMae": None,
+                "pairedMarginMae": None,
+                "spreadGames": 0,
+                "marketTotalMae": None,
+                "pairedTotalMae": None,
+                "totalGames": 0,
             }
         correct = 0
         margin_err = []
@@ -1221,6 +1227,10 @@ def summarize(games: list[dict]) -> dict:
         brier = []
         market = []
         paired = []
+        market_margin = []
+        paired_margin = []
+        market_total = []
+        paired_total = []
         covered = 0
         decided = 0
         for game in subset:
@@ -1248,6 +1258,16 @@ def summarize(games: list[dict]) -> dict:
             if game["postedHomeWinProb"] is not None:
                 paired.append((home_equivalent - outcome) ** 2)
                 market.append((game["postedHomeWinProb"] - outcome) ** 2)
+            if game["postedSpreadHome"] is not None:
+                paired_margin.append(abs(margin - predicted_margin))
+                market_margin.append(
+                    abs(margin - (-float(game["postedSpreadHome"])))
+                )
+            if game["postedTotal"] is not None:
+                paired_total.append(abs(actual["total"] - predicted_total))
+                market_total.append(
+                    abs(actual["total"] - float(game["postedTotal"]))
+                )
             home_low, home_high = pred["homeRange"]
             away_low, away_high = pred["awayRange"]
             if home_low <= actual["homeScore"] <= home_high and away_low <= actual["awayScore"] <= away_high:
@@ -1262,6 +1282,20 @@ def summarize(games: list[dict]) -> dict:
             "marketBrier": None if not market else round(float(np.mean(market)), 3),
             "pairedBrier": None if not paired else round(float(np.mean(paired)), 3),
             "marketGames": len(market),
+            "marketMarginMae": (
+                None if not market_margin else round(float(np.mean(market_margin)), 2)
+            ),
+            "pairedMarginMae": (
+                None if not paired_margin else round(float(np.mean(paired_margin)), 2)
+            ),
+            "spreadGames": len(market_margin),
+            "marketTotalMae": (
+                None if not market_total else round(float(np.mean(market_total)), 2)
+            ),
+            "pairedTotalMae": (
+                None if not paired_total else round(float(np.mean(paired_total)), 2)
+            ),
+            "totalGames": len(market_total),
         }
 
     by_season = {}

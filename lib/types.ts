@@ -135,6 +135,12 @@ export type AccuracySlice = {
   marketBrier: number | null
   pairedBrier: number | null
   marketGames: number
+  marketMarginMae: number | null
+  pairedMarginMae: number | null
+  spreadGames: number
+  marketTotalMae: number | null
+  pairedTotalMae: number | null
+  totalGames: number
   season?: number
   week?: number
 }

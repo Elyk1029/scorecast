@@ -79,18 +79,31 @@ function SliceView({ slice, seasonLabel }: { slice: AccuracySlice; seasonLabel?:
           <CardDescription>{honesty(slice)}</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <ComparisonValue
-              label="Posted line"
-              value={slice.marketBrier}
+          <div className="grid grid-cols-[1fr_auto_auto] items-baseline gap-x-6 gap-y-2 text-sm">
+            <span />
+            <span className="text-xs text-muted-foreground">Market</span>
+            <span className="text-xs text-muted-foreground">Yardline</span>
+            <ComparisonRow
+              label="Win Brier"
+              market={slice.marketBrier}
+              yardline={slice.pairedBrier}
+              digits={3}
             />
-            <ComparisonValue
-              label="Yardline on same games"
-              value={slice.pairedBrier}
+            <ComparisonRow
+              label="Margin MAE"
+              market={slice.marketMarginMae}
+              yardline={slice.pairedMarginMae}
+              digits={2}
+            />
+            <ComparisonRow
+              label="Total MAE"
+              market={slice.marketTotalMae}
+              yardline={slice.pairedTotalMae}
+              digits={2}
             />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Posted-line Brier from the nflverse moneyline, vig removed. Both values use the same {slice.marketGames} games. Lower is sharper.
+            nflverse moneyline, spread, and total with vig removed from the moneyline. Each row uses identical games: win {slice.marketGames}, spread {slice.spreadGames}, total {slice.totalGames}. Lower is sharper.
           </p>
         </CardContent>
       </Card>
@@ -109,14 +122,25 @@ function honesty(slice: AccuracySlice) {
   return `${coin} On the identical priced-game cohort, Yardline is ${slice.pairedBrier.toFixed(3)} and the posted line is ${slice.marketBrier.toFixed(3)}. Yardline does not claim to beat the market.`
 }
 
-function ComparisonValue({ label, value }: { label: string; value: number | null }) {
+function ComparisonRow({
+  label,
+  market,
+  yardline,
+  digits,
+}: {
+  label: string
+  market: number | null
+  yardline: number | null
+  digits: number
+}) {
+  const format = (value: number | null) =>
+    value == null ? "—" : value.toFixed(digits)
   return (
-    <div>
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="font-display text-3xl tabular-nums text-uncertainty">
-        {value == null ? "No price" : value.toFixed(3)}
-      </p>
-    </div>
+    <>
+      <span>{label}</span>
+      <span className="font-display text-2xl tabular-nums text-uncertainty">{format(market)}</span>
+      <span className="font-display text-2xl tabular-nums text-forecast">{format(yardline)}</span>
+    </>
   )
 }
 
