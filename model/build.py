@@ -17,7 +17,13 @@ import nflreadpy as nfl
 import numpy as np
 import polars as pl
 
-ALIASES = {"LA": "LAR"}
+ALIASES = {
+    "LA": "LAR",
+    "STL": "LAR",
+    "SD": "LAC",
+    "OAK": "LV",
+    "JAC": "JAX",
+}
 
 
 def canon(team: str | None) -> str | None:
@@ -29,9 +35,10 @@ def canon(team: str | None) -> str | None:
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "season.json"
 SEASONS = [2023, 2024, 2025, 2026]
+TRAINING_SEASONS = list(range(2010, 2027))
 PUBLISH_FROM = 2024
 PLAYS = 60.0
-MODEL_VERSION = "yardline-2.0"
+MODEL_VERSION = "yardline-3.0"
 # Plays of memory carried into a new season. About one or two games, so a
 # three-game stretch can outweigh last year without letting one Sunday rewrite it.
 SEASON_PRIOR_PLAYS = 80.0
@@ -39,6 +46,8 @@ SEASON_PRIOR_PLAYS = 80.0
 # model's historical win rate, so the published probability is pulled toward 0.5.
 MARGIN_SD = 13.5
 WIN_SHRINK = 0.28
+RIDGE_PENALTY = 100.0
+LOGISTIC_PENALTY = 10.0
 
 # City, nickname, hours behind Eastern.
 TEAMS: dict[str, tuple[str, str, int]] = {
@@ -83,6 +92,9 @@ class Rating:
         self.defn = 0.0
         self.off_n = SEASON_PRIOR_PLAYS
         self.def_n = SEASON_PRIOR_PLAYS
+        self.points_off = 0.0
+        self.points_def = 0.0
+        self.elo = 0.0
         self.games = 0
 
     def snapshot(self) -> dict[str, float]:
@@ -93,6 +105,9 @@ class Rating:
         self.defn *= 0.55
         self.off_n = SEASON_PRIOR_PLAYS
         self.def_n = SEASON_PRIOR_PLAYS
+        self.points_off *= 0.55
+        self.points_def *= 0.55
+        self.elo *= 0.65
         self.games = 0
 
     def update(
@@ -110,6 +125,20 @@ class Rating:
         self.defn = (1 - def_a) * self.defn + def_a * def_epa
         self.off_n = min(260.0, self.off_n + off_plays * 0.2)
         self.def_n = min(260.0, self.def_n + def_plays * 0.2)
+
+    def update_score(
+        self,
+        points_for: float,
+        points_against: float,
+        league_points: float,
+    ) -> None:
+        alpha = 0.18 if self.games >= 3 else 0.25
+        self.points_off = (1 - alpha) * self.points_off + alpha * (
+            points_for - league_points
+        )
+        self.points_def = (1 - alpha) * self.points_def + alpha * (
+            points_against - league_points
+        )
         self.games += 1
 
 
@@ -169,24 +198,25 @@ def regulation_tie_prob(expected_margin: float) -> float:
     )
 
 
-def calibrated_probs(expected_margin: float) -> tuple[float, float]:
+def calibrated_probs(
+    expected_margin: float,
+    logistic_beta: np.ndarray | None = None,
+) -> tuple[float, float]:
     """Return home win probability and the chance the game is still tied after overtime.
 
     Win probability is a normal with SD 13.5, then shrunk toward 0.5 so the Brier
     score is not worse than a coin flip. A regulation tie plays overtime. The
     published tie rate is only the games that stay level after that period.
     """
-    raw = normal_cdf(expected_margin / MARGIN_SD)
     p_reg_tie = regulation_tie_prob(expected_margin)
-    p_home_reg = max(0.0, raw - 0.5 * p_reg_tie)
-    edge = math.tanh(expected_margin / 3.0)
-    home_given_ot = (1.0 - OT_STILL_TIED) * (0.5 + 0.08 * edge)
     tie = p_reg_tie * OT_STILL_TIED
-    p_home = p_home_reg + p_reg_tie * home_given_ot
-    decisive = max(1.0 - tie, 1e-9)
-    conditional_home = p_home / decisive
-    conditional_home = 0.5 + WIN_SHRINK * (conditional_home - 0.5)
-    home = decisive * conditional_home
+    if logistic_beta is None:
+        raw = normal_cdf(expected_margin / MARGIN_SD)
+        conditional_home = 0.5 + WIN_SHRINK * (raw - 0.5)
+    else:
+        logit = float(logistic_beta[0] + logistic_beta[1] * expected_margin)
+        conditional_home = 1.0 / (1.0 + math.exp(-float(np.clip(logit, -30, 30))))
+    home = (1.0 - tie) * conditional_home
     return home, tie
 
 
@@ -209,9 +239,10 @@ def freeze_published_forecasts(
     previous: dict | None,
     generated_at: str,
 ) -> None:
-    """Keep every forecast users could already have seen unchanged.
+    """Keep live-published forecasts unchanged and refresh honest backtests.
 
-    The previous current week and every week before it are immutable. Future
+    A row labeled published is an immutable forecast users could have seen.
+    Historical backtests are rebuilt when the model changes, and future
     schedule rows remain provisional until their week becomes current.
     """
     old_games = {
@@ -241,7 +272,11 @@ def freeze_published_forecasts(
         for game in week["games"]:
             key = game_key(game)
             old = old_games.get(game["id"])
-            if old is not None and old_cutoff is not None and key <= old_cutoff:
+            old_was_published = old is not None and (
+                old.get("recordKind") == "published"
+                or (old.get("recordKind") is None and key == old_cutoff)
+            )
+            if old_was_published and old_cutoff is not None and key <= old_cutoff:
                 for field in frozen_fields:
                     game[field] = old[field]
                 game["forecastedAt"] = old.get(
@@ -252,15 +287,17 @@ def freeze_published_forecasts(
                     (previous or {}).get("modelVersion", "unknown"),
                 )
                 game["locked"] = True
-                game["recordKind"] = old.get(
-                    "recordKind",
-                    "published" if key == old_cutoff else "backtest",
-                )
-            elif key <= new_cutoff:
+                game["recordKind"] = "published"
+            elif key == new_cutoff:
                 game["forecastedAt"] = generated_at
                 game["forecastModelVersion"] = MODEL_VERSION
                 game["locked"] = True
                 game["recordKind"] = "published"
+            elif key < new_cutoff:
+                game["forecastedAt"] = generated_at
+                game["forecastModelVersion"] = MODEL_VERSION
+                game["locked"] = True
+                game["recordKind"] = "backtest"
             else:
                 game["forecastedAt"] = None
                 game["forecastModelVersion"] = MODEL_VERSION
@@ -277,9 +314,98 @@ def shrunk_rate(total: float, count: float, prior: float, prior_n: float) -> flo
     return (total + prior * prior_n) / (count + prior_n) if count + prior_n else prior
 
 
+def fit_ridge(
+    features: list[list[float]],
+    targets: list[float],
+    penalty: float = RIDGE_PENALTY,
+) -> np.ndarray:
+    x = np.asarray(features, dtype=float)
+    y = np.asarray(targets, dtype=float)
+    regularizer = np.eye(x.shape[1]) * penalty
+    regularizer[0, 0] = 0.0
+    return np.linalg.solve(x.T @ x + regularizer, x.T @ y)
+
+
+def fit_logistic(
+    margins: np.ndarray,
+    outcomes: list[float],
+    penalty: float = LOGISTIC_PENALTY,
+) -> np.ndarray:
+    x = np.column_stack([np.ones(len(margins)), margins])
+    y = np.asarray(outcomes, dtype=float)
+    beta = np.array([0.0, 0.12])
+    for _ in range(30):
+        logits = np.clip(x @ beta, -30, 30)
+        probs = 1.0 / (1.0 + np.exp(-logits))
+        weights = probs * (1.0 - probs)
+        hessian = x.T @ (weights[:, None] * x) + np.diag([0.0, penalty])
+        gradient = x.T @ (probs - y) + np.array([0.0, penalty * beta[1]])
+        step = np.linalg.solve(hessian, gradient)
+        beta -= step
+        if float(np.max(np.abs(step))) < 1e-8:
+            break
+    return beta
+
+
+def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
+    """Fit only completed prior-season rows; never use the season being scored."""
+    if len(training) < 500:
+        return {
+            "margin": np.array([0.0, 1.7, 0.30, 2.5, 0.5]),
+            "total": np.array([45.0, 0.35, -0.2]),
+            "logistic": np.array([0.0, 0.13]),
+        }
+    margin_beta = fit_ridge(
+        [row["marginFeatures"] for row in training],
+        [row["margin"] for row in training],
+    )
+    total_beta = fit_ridge(
+        [row["totalFeatures"] for row in training],
+        [row["total"] for row in training],
+    )
+    fitted_margins = np.asarray(
+        [
+            float(np.dot(row["marginFeatures"], margin_beta))
+            for row in training
+        ]
+    )
+    logistic_beta = fit_logistic(
+        fitted_margins,
+        [row["homeOutcome"] for row in training],
+    )
+    return {
+        "margin": margin_beta,
+        "total": total_beta,
+        "logistic": logistic_beta,
+    }
+
+
+def forecast_features(
+    row: dict,
+    home_rating: Rating,
+    away_rating: Rating,
+    league_points: float,
+) -> tuple[list[float], list[float]]:
+    field = 0.0 if row["location"] == "Neutral" else 1.0
+    home_strength = home_rating.points_off + away_rating.points_def
+    away_strength = away_rating.points_off + home_rating.points_def
+    score_margin = home_strength - away_strength
+    score_total = 2.0 * league_points + home_strength + away_strength
+    home_rest = float(row.get("home_rest") or 7)
+    away_rest = float(row.get("away_rest") or 7)
+    rest_edge = float(np.clip(home_rest - away_rest, -7, 7)) / 7.0
+    elo_edge = (home_rating.elo - away_rating.elo) / 100.0
+    return (
+        [1.0, field, score_margin, elo_edge, rest_edge],
+        [1.0, score_total - 45.0, abs(elo_edge)],
+    )
+
+
 def main() -> None:
     print("Loading nflverse schedules, play-by-play, player stats, and injuries...")
-    schedules = nfl.load_schedules(SEASONS).filter(pl.col("game_type") == "REG")
+    schedules = nfl.load_schedules(TRAINING_SEASONS).filter(
+        pl.col("game_type") == "REG"
+    )
     pbp = nfl.load_pbp(SEASONS)
     if "season_type" in pbp.columns:
         pbp = pbp.filter(pl.col("season_type") == "REG")
@@ -342,8 +468,11 @@ def main() -> None:
 
     recent: dict[str, list[dict]] = {abbr: [] for abbr in TEAMS}
     ratings = {abbr: Rating() for abbr in TEAMS}
-    home_field = 1.7
-    home_n = 40.0
+    training_rows: list[dict] = []
+    current_model = fit_forecast_model(training_rows)
+    home_field = float(current_model["margin"][1])
+    league_points_sum = 22.5 * 200.0
+    league_team_games = 200.0
     weeks_out: list[dict] = []
     learned: list[dict] = []
     last_season = None
@@ -366,20 +495,48 @@ def main() -> None:
                 rating.regress_season()
             for abbr in recent:
                 recent[abbr] = recent[abbr][-6:]
+        if season != last_season:
+            current_model = fit_forecast_model(training_rows)
+            home_field = float(current_model["margin"][1])
         last_season = season
 
+        league_points = league_points_sum / league_team_games
         before = {abbr: ratings[abbr].snapshot() for abbr in TEAMS}
         games_out = []
+        features_by_id: dict[str, tuple[list[float], list[float]]] = {}
         for row in week_rows[(season, week)]:
+            margin_features, total_features = forecast_features(
+                row,
+                ratings[row["home_team"]],
+                ratings[row["away_team"]],
+                league_points,
+            )
+            features_by_id[row["game_id"]] = (margin_features, total_features)
             game = forecast_game(
                 row,
-                ratings,
                 recent,
                 injury_index,
                 player_index,
-                home_field,
+                current_model,
+                margin_features,
+                total_features,
             )
             games_out.append(game)
+            if game["actual"] is not None:
+                margin = float(game["actual"]["margin"])
+                total = float(game["actual"]["total"])
+                training_rows.append(
+                    {
+                        "season": season,
+                        "marginFeatures": margin_features,
+                        "totalFeatures": total_features,
+                        "margin": margin,
+                        "total": total,
+                        "homeOutcome": (
+                            1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
+                        ),
+                    }
+                )
 
         # Freeze the full weekly slate before learning any result from it.
         # This also prevents co-kickoff games from depending on row order.
@@ -387,13 +544,18 @@ def main() -> None:
         for row in week_rows[(season, week)]:
             game = games_by_id[row["game_id"]]
             if game["actual"] is not None:
-                update_after_game(row, ratings, epa_lookup, recent, player_index)
-                if row["location"] != "Neutral" and game["actual"]["margin"] is not None:
-                    raw = game["prediction"]["rawMargin"]
-                    resid = game["actual"]["margin"] - raw
-                    home_field = (home_field * home_n + resid) / (home_n + 1)
-                    home_n += 1
-                    home_field = float(np.clip(home_field, 0.8, 2.6))
+                update_after_game(
+                    row,
+                    ratings,
+                    epa_lookup,
+                    recent,
+                    player_index,
+                    league_points,
+                )
+                league_points_sum += float(row["home_score"]) + float(
+                    row["away_score"]
+                )
+                league_team_games += 2.0
 
         if season >= PUBLISH_FROM:
             weeks_out.append(
@@ -455,7 +617,7 @@ def main() -> None:
             "Forecasts use only games already played.",
             "The posted line is a comparison, not an input.",
             "Weather and travel are shown as context and do not change the score in this version.",
-            "Win probability is a margin normal (SD 13.5) shrunk toward 0.5.",
+            "Score coefficients and win calibration are fit on completed prior seasons only.",
             "A rounded tie indicates likely overtime. About six percent of regular-season overtimes still end tied.",
             "A locked game keeps the forecast that was published before kickoff.",
             "This is research, not a recommendation to bet.",
@@ -477,36 +639,29 @@ def main() -> None:
 
 def forecast_game(
     row: dict,
-    ratings: dict[str, Rating],
     recent: dict[str, list[dict]],
     injury_index: dict[tuple[int, int, str, str], str],
     player_index: dict[tuple[int, int, str], list[dict]],
-    home_field: float,
+    model: dict[str, np.ndarray],
+    margin_features: list[float],
+    total_features: list[float],
 ) -> dict:
     home = row["home_team"]
     away = row["away_team"]
     neutral = row["location"] == "Neutral"
-    field = 0.0 if neutral else home_field
-    home_rating = ratings[home]
-    away_rating = ratings[away]
-    # defn is EPA allowed. Higher means a worse defense, so it adds to the
-    # opponent's expected EPA. Subtracting it counted a leaky defense as a strength.
-    home_epa = home_rating.off + away_rating.defn
-    away_epa = away_rating.off + home_rating.defn
-    raw_margin = PLAYS * (home_epa - away_epa)
-    base_total = 45.0 + PLAYS * (home_epa + away_epa)
-    base_total = float(np.clip(base_total, 32, 60))
+    raw_margin = float(np.dot(margin_features, model["margin"]))
+    base_total = float(np.dot(total_features, model["total"]))
 
     upcoming = row["home_score"] is None or row["away_score"] is None
     qb_note, qb_home_points, qb_away_points = quarterback_adjustment(
         row, recent, injury_index, use_injuries=upcoming
     )
     expected_total = base_total + qb_home_points + qb_away_points
-    expected_margin = raw_margin + field + qb_home_points - qb_away_points
+    expected_margin = raw_margin + qb_home_points - qb_away_points
     home_mean, away_mean = bounded_means(expected_total, expected_margin)
 
     expected_margin = float(home_mean - away_mean)
-    home_wins, ties = calibrated_probs(expected_margin)
+    home_wins, ties = calibrated_probs(expected_margin, model["logistic"])
     home_score = int(round(home_mean))
     away_score = int(round(away_mean))
     overtime = home_score == away_score
@@ -518,30 +673,41 @@ def forecast_game(
 
     adjustments = [
         {
-            "label": f"{TEAMS[home][1]} offense",
-            "points": round(PLAYS * home_epa, 1),
+            "label": "Scoring form",
+            "points": round(model["margin"][2] * margin_features[2], 1),
             "detail": (
-                f"{TEAMS[home][1]} offense {home_rating.off:+.2f} EPA/play "
-                f"against a {TEAMS[away][1]} defense allowing {away_rating.defn:+.2f}. "
-                "Allowing more EPA raises the opponent's score."
+                "Opponent-aware points scored and allowed, updated only after the "
+                "whole prior week is complete."
             ),
         },
         {
-            "label": f"{TEAMS[away][1]} offense",
-            "points": round(-PLAYS * away_epa, 1),
+            "label": "Elo strength",
+            "points": round(model["margin"][3] * margin_features[3], 1),
             "detail": (
-                f"{TEAMS[away][1]} offense {away_rating.off:+.2f} EPA/play "
-                f"against a {TEAMS[home][1]} defense allowing {home_rating.defn:+.2f}. "
-                "Shown from the home side, so a weak day for this offense adds to the home margin."
+                "A result-based team-strength rating trained on completed prior "
+                "seasons. It does not use the betting line."
             ),
+        },
+        {
+            "label": "Rest",
+            "points": round(model["margin"][4] * margin_features[4], 1),
+            "detail": "Difference in days of rest, capped at one week either way.",
         },
     ]
     if not neutral:
         adjustments.append(
             {
                 "label": "Home field",
-                "points": round(field, 1),
-                "detail": "Fitted from earlier games this model has already scored. Neutral sites get none.",
+                "points": round(model["margin"][1], 1),
+                "detail": "Learned from completed prior seasons. Neutral sites get none.",
+            }
+        )
+    if abs(float(model["margin"][0])) >= 0.1:
+        adjustments.append(
+            {
+                "label": "League baseline",
+                "points": round(float(model["margin"][0]), 1),
+                "detail": "The fitted home-margin intercept for this season's model.",
             }
         )
     if qb_home_points or qb_away_points:
@@ -842,7 +1008,33 @@ def actual_players(player_index, row, home_proj, away_proj) -> dict:
     return found
 
 
-def update_after_game(row, ratings, epa_lookup, recent, player_index) -> None:
+def update_after_game(
+    row,
+    ratings,
+    epa_lookup,
+    recent,
+    player_index,
+    league_points,
+) -> None:
+    home = ratings[row["home_team"]]
+    away = ratings[row["away_team"]]
+    home_score = float(row["home_score"])
+    away_score = float(row["away_score"])
+    margin = home_score - away_score
+    elo_edge = home.elo - away.elo
+    expected_home = 1.0 / (1.0 + 10 ** (-elo_edge / 400.0))
+    actual_home = 1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
+    multiplier = (
+        math.log(abs(margin) + 1.0) * 2.2 / (elo_edge * 0.001 + 2.2)
+        if margin
+        else 1.0
+    )
+    elo_delta = 18.0 * multiplier * (actual_home - expected_home)
+    home.elo += elo_delta
+    away.elo -= elo_delta
+    home.update_score(home_score, away_score, league_points)
+    away.update_score(away_score, home_score, league_points)
+
     for team, opponent in (
         (row["home_team"], row["away_team"]),
         (row["away_team"], row["home_team"]),

@@ -4,7 +4,9 @@ Yardline is a weekly NFL forecast you can check against the scoreboard. It publi
 
 The site is research. It is for adults 21+ where wagering is legal, and it is not a bet recommendation. Weather and travel are shown as context and do not move the score. There is no live odds feed. The posted line, when one is stored, comes from nflverse and is a comparison, not a model input.
 
-Forecasts are built in Python from games already played and written to `data/season.json`. The current week is locked: later refreshes add results without rewriting what was published. Older reconstructed games are labeled as backtests, and future weeks remain provisional. The Next.js app only reads the JSON file; the model does not run on Vercel.
+Forecasts are built in Python from games already played and written to `data/season.json`. Margin and total use regularized regressions over scoring form, Elo strength, rest, and home field; a separate logistic calibration converts margin to win probability. Each season is a true expanding-window holdout: coefficients are fit on completed prior seasons, then held fixed while that season is scored. Betting lines are benchmarks only, never model features.
+
+The current week is locked: later refreshes add results without rewriting what was published. Older reconstructed games are labeled as backtests, and future weeks remain provisional. The Next.js app only reads the JSON file; the model does not run on Vercel.
 
 ## Run locally
 
