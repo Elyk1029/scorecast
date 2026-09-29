@@ -65,6 +65,7 @@ export type Prediction = {
   awayScore: number
   homeWinProb: number
   tieProb: number
+  overtime: boolean
   spreadHome: number
   total: number
   homeRange: [number, number]

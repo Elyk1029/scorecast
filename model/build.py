@@ -32,7 +32,7 @@ SEASONS = [2023, 2024, 2025, 2026]
 PUBLISH_FROM = 2024
 PLAYS = 60.0
 SIMS = 2500
-MODEL_VERSION = "yardline-1.2"
+MODEL_VERSION = "yardline-1.3"
 # Plays of memory carried into a new season. About one or two games, so a
 # three-game stretch can outweigh last year without letting one Sunday rewrite it.
 SEASON_PRIOR_PLAYS = 80.0
@@ -188,18 +188,55 @@ def normal_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-def calibrated_probs(expected_margin: float) -> tuple[float, float]:
-    """Return home win probability and a one-point tie band.
+# Regular-season overtime is 10 minutes. Most regulation ties become a field
+# goal for one side. About one overtime in ten is still level when the clock expires.
+OT_POINTS = 3.0
+OT_STILL_TIED = 0.10
 
-    The expected margin is unchanged. Win probability is a normal with SD 13.5,
-    then shrunk toward 0.5 so the Brier score is not worse than a coin flip.
-    """
-    raw = normal_cdf(expected_margin / MARGIN_SD)
-    home = 0.5 + WIN_SHRINK * (raw - 0.5)
-    tie = normal_cdf((0.5 - expected_margin) / MARGIN_SD) - normal_cdf(
+
+def regulation_tie_prob(expected_margin: float) -> float:
+    """Chance the score is level after 60 minutes and overtime starts."""
+    return normal_cdf((0.5 - expected_margin) / MARGIN_SD) - normal_cdf(
         (-0.5 - expected_margin) / MARGIN_SD
     )
+
+
+def calibrated_probs(expected_margin: float) -> tuple[float, float]:
+    """Return home win probability and the chance the game is still tied after overtime.
+
+    Win probability is a normal with SD 13.5, then shrunk toward 0.5 so the Brier
+    score is not worse than a coin flip. A regulation tie plays overtime. The
+    published tie rate is only the games that stay level after that period.
+    """
+    raw = normal_cdf(expected_margin / MARGIN_SD)
+    p_reg_tie = regulation_tie_prob(expected_margin)
+    p_home_reg = max(0.0, raw - 0.5 * p_reg_tie)
+    edge = math.tanh(expected_margin / 3.0)
+    home_given_ot = (1.0 - OT_STILL_TIED) * (0.5 + 0.08 * edge)
+    p_home = p_home_reg + p_reg_tie * home_given_ot
+    home = 0.5 + WIN_SHRINK * (p_home - 0.5)
+    tie = p_reg_tie * OT_STILL_TIED
     return home, tie
+
+
+def apply_overtime(
+    home_mean: float, away_mean: float, neutral: bool
+) -> tuple[int, int, float, bool]:
+    """Break a rounded regulation tie with the usual overtime field goal.
+
+    The points go to the team with the higher unrounded score. A dead heat at
+    home goes to the home team. A dead heat on a neutral field stays level,
+    because overtime is a coin flip and neither side has earned the kick.
+    """
+    home_score = int(round(home_mean))
+    away_score = int(round(away_mean))
+    if home_score != away_score:
+        return home_score, away_score, 0.0, False
+    if away_mean > home_mean:
+        return home_score, away_score + int(OT_POINTS), -OT_POINTS, True
+    if home_mean > away_mean or not neutral:
+        return home_score + int(OT_POINTS), away_score, OT_POINTS, True
+    return home_score, away_score, 0.0, True
 
 
 def team_payload(abbr: str) -> dict[str, str | int]:
@@ -380,7 +417,8 @@ def main() -> None:
             "Forecasts use only games already played.",
             "The posted line is a comparison, not an input.",
             "Weather and travel are shown as context and do not change the score in this version.",
-            "Win probability is a margin normal (SD 13.5) shrunk toward 0.5. The score and spread are the raw projection.",
+            "Win probability is a margin normal (SD 13.5) shrunk toward 0.5.",
+            "A regulation tie plays a 10-minute overtime. The score adds a field goal for the side ahead. About one overtime in ten still ends tied.",
             "This is research, not a recommendation to bet.",
         ],
     }
@@ -431,6 +469,9 @@ def forecast_game(
 
     expected_margin = float(home_mean - away_mean)
     home_wins, ties = calibrated_probs(expected_margin)
+    home_score, away_score, ot_points, overtime = apply_overtime(
+        home_mean, away_mean, neutral
+    )
 
     wind = parse_wind(row["wind"])
     indoor = str(row["roof"] or "").lower() in {"dome", "closed"}
@@ -473,16 +514,37 @@ def forecast_game(
                 "detail": qb_note or "Starter availability changed the expected points.",
             }
         )
+    if overtime and ot_points:
+        winner = TEAMS[home][1] if ot_points > 0 else TEAMS[away][1]
+        adjustments.append(
+            {
+                "label": "Overtime",
+                "points": ot_points,
+                "detail": (
+                    f"Regulation rounds to a tie, so this plays a 10-minute overtime. "
+                    f"The score adds a field goal for the {winner}, the usual finish. "
+                    "About one overtime in ten still ends tied."
+                ),
+            }
+        )
+        context.append(
+            f"Regulation is level. The score includes an overtime field goal for the {winner}. About one overtime in ten still ends tied."
+        )
+    elif overtime:
+        context.append(
+            "Regulation is level on a neutral field. Overtime is a coin flip, so the score stays level. About one overtime in ten ends tied."
+        )
 
     prediction = {
-        "homeScore": int(round(home_mean)),
-        "awayScore": int(round(away_mean)),
+        "homeScore": home_score,
+        "awayScore": away_score,
         "homeWinProb": round(home_wins, 3),
         "tieProb": round(ties, 3),
-        "spreadHome": round_half(-expected_margin),
-        "total": round_half(home_mean + away_mean),
-        "homeRange": score_band(home_mean),
-        "awayRange": score_band(away_mean),
+        "overtime": overtime,
+        "spreadHome": round_half(-(home_score - away_score)),
+        "total": round_half(home_score + away_score),
+        "homeRange": score_band(home_score),
+        "awayRange": score_band(away_score),
         "rawMargin": round(raw_margin, 2),
     }
     home_players, home_player_notes = project_players(

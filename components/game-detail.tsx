@@ -83,12 +83,12 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
       </dl>
 
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-        {percent(game.prediction.homeWinProb)} is the calibrated chance {home} wins
-        {game.prediction.tieProb >= 0.015
-          ? `, with about a ${percent(game.prediction.tieProb)} tie band`
-          : ""}
-        . The spread is the raw score projection and is not shrunk. Probability is pulled
-        toward 50% because those margins have been too sharp in the backtest.
+        {percent(game.prediction.homeWinProb)} is the calibrated chance {home} wins.
+        {game.prediction.overtime
+          ? " Regulation rounds to a tie, so the score adds the usual overtime field goal. The chance stays close to even, because overtime is nearly a coin flip, and about one overtime in ten still ends tied."
+          : ""}{" "}
+        The spread matches that score and is not shrunk. Probability is pulled toward 50%
+        because those margins have been too sharp in the backtest.
       </p>
 
       {final && miss != null ? (

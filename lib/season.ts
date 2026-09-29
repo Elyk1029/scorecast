@@ -85,12 +85,11 @@ export function teamName(file: SeasonFile, abbr: string) {
 export function spreadText(game: Game) {
   const line = game.prediction.spreadHome
   if (line === 0) return "Pick"
-  const homeDog = line > 0
-  const abbr = homeDog ? game.home : game.away
-  const sign = homeDog ? "+" : "−"
+  const homeFavored = line < 0
+  const abbr = homeFavored ? game.home : game.away
   const magnitude = Math.abs(line)
   const shown = Number.isInteger(magnitude) ? magnitude.toFixed(0) : magnitude.toFixed(1)
-  return `${abbr} ${sign}${shown}`
+  return `${abbr} −${shown}`
 }
 
 export function favoriteSide(game: Game) {
