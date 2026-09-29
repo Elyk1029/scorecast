@@ -378,7 +378,7 @@ def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
     """Fit only completed prior-season rows; never use the season being scored."""
     if len(training) < 500:
         return {
-            "margin": np.array([0.0, 1.7, 0.30, 2.5, 0.5, 0.0]),
+            "margin": np.array([0.0, 1.7, 0.30, 2.5, 0.5]),
             "total": np.array([45.0, 0.35, -0.2, 0.0]),
             "logistic": np.array([0.0, 0.13]),
         }
@@ -444,10 +444,9 @@ def forecast_features(
     away_rest = float(row.get("away_rest") or 7)
     rest_edge = float(np.clip(home_rest - away_rest, -7, 7)) / 7.0
     elo_edge = (home_rating.elo - away_rating.elo) / 100.0
-    qb_edge = PLAYS * (home_qb.epa - away_qb.epa)
     qb_total = PLAYS * (home_qb.epa + away_qb.epa)
     return (
-        [1.0, field, score_margin, elo_edge, rest_edge, qb_edge],
+        [1.0, field, score_margin, elo_edge, rest_edge],
         [1.0, score_total - 45.0, abs(elo_edge), qb_total],
     )
 
@@ -759,14 +758,6 @@ def forecast_game(
             "label": "Rest",
             "points": round(model["margin"][4] * margin_features[4], 1),
             "detail": "Difference in days of rest, capped at one week either way.",
-        },
-        {
-            "label": "Quarterback form",
-            "points": round(model["margin"][5] * margin_features[5], 1),
-            "detail": (
-                "The most recent starter's passing EPA, shrunk toward league "
-                "average and updated only after each completed week."
-            ),
         },
     ]
     if not neutral:

@@ -61,7 +61,6 @@ class ForecastMathTests(unittest.TestCase):
                         strength,
                         strength / 4,
                         0.0,
-                        strength / 8,
                     ],
                     "totalFeatures": [
                         1.0,
@@ -75,7 +74,7 @@ class ForecastMathTests(unittest.TestCase):
                 }
             )
         model = fit_forecast_model(training)
-        self.assertEqual(model["margin"].shape, (6,))
+        self.assertEqual(model["margin"].shape, (5,))
         self.assertEqual(model["total"].shape, (4,))
         self.assertEqual(model["logistic"].shape, (2,))
         home, tie = calibrated_probs(3.0, model["logistic"])

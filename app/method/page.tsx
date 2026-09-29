@@ -18,7 +18,7 @@ export default function MethodPage() {
       <PageHeader
         eyebrow="Method"
         title="How the number is made"
-        lede="Short version: scoring form, Elo strength, quarterback form, rest, and home field estimate the score. A separate calibration turns that margin into win probability. Every coefficient is trained on completed prior seasons only."
+        lede="Short version: scoring form, Elo strength, rest, and home field estimate the margin; quarterback form also helps estimate the total. A separate calibration turns margin into win probability. Every coefficient is trained on completed prior seasons only."
       />
       <p className="text-xs tracking-wide text-uncertainty uppercase">
         {file.modelVersion} · updated {formatGenerated(file.generatedAt)} · home field{" "}
@@ -30,7 +30,7 @@ export default function MethodPage() {
           The entire week is forecast before any result from that week updates a rating, so a Sunday result cannot leak into another game on the same slate. Scoring form and Elo carry into a new season at reduced strength. The regression and probability coefficients are then fit once using completed prior seasons and held fixed for the season being forecast.
         </Section>
         <Section title="The score">
-          A ridge regression estimates margin from rolling points scored and allowed, Elo difference, quarterback form, rest difference, and home field. A second regression estimates the total from scoring form, the strength gap, and both recent starters’ passing form. The penalty keeps noisy features from producing extreme scores. The published score is the fitted mean, rounded; accuracy uses the unrounded margin and total. The slate band is 18 points either side of each team’s mean.
+          A ridge regression estimates margin from rolling points scored and allowed, Elo difference, rest difference, and home field. A second regression estimates the total from scoring form, the strength gap, and both recent starters’ passing form. Quarterback form was retained for the total only: it lowered held-out total error but did not improve the side or win probability. The published score is the fitted mean, rounded; accuracy uses the unrounded margin and total.
         </Section>
         <Section title="Locked forecasts">
           A week becomes locked when it is the current slate. Later refreshes add the scoreboard but keep its score, probability, players, context, and comparison line unchanged. Future weeks are provisional. Older reconstructed games are labeled as backtests rather than pretending they were published live.
@@ -39,7 +39,7 @@ export default function MethodPage() {
           Home field is a single number, currently {formatSigned(file.homeField)} points, fit from completed prior seasons. Neutral sites get none of it. It is one row on the game sheet, not a secret factor.
         </Section>
         <Section title="Quarterback">
-          The most recent starter has a passing-EPA rating with 100 plays of league-average prior weight and offseason regression. Only information through the previous week is used. If that starter is out or doubtful before an upcoming game, the separate availability override docks the team 3.5 points. Questionable is written down and does not change the score. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
+          The most recent starter has a passing-EPA rating with 100 plays of league-average prior weight and offseason regression. Only information through the previous week is used, and this rating moves the expected total rather than the margin. If that starter is out or doubtful before an upcoming game, the separate availability override docks the team 3.5 points. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
         </Section>
         <Section title="Win probability">
           A regularized logistic calibration learns how often each fitted margin became a home win in completed prior seasons. Its training margins are out-of-season predictions, not in-sample fitted values. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
