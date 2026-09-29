@@ -43,6 +43,7 @@ class ForecastMathTests(unittest.TestCase):
             margin = 1.5 + 0.8 * strength
             training.append(
                 {
+                    "season": 2010 + index // 100,
                     "marginFeatures": [1.0, 1.0, strength, strength / 4, 0.0],
                     "totalFeatures": [1.0, float(index % 9), abs(strength) / 4],
                     "margin": margin,

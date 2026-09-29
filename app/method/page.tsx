@@ -42,7 +42,7 @@ export default function MethodPage() {
           If the recent starter is out or doubtful before an upcoming game, that team is docked 3.5 points. Questionable is written down and does not change the score. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
         </Section>
         <Section title="Win probability">
-          A regularized logistic calibration learns how often each fitted margin became a home win in completed prior seasons. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
+          A regularized logistic calibration learns how often each fitted margin became a home win in completed prior seasons. Its training margins are out-of-season predictions, not in-sample fitted values. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
         </Section>
         <Section title="Player lines">
           Quarterback attempts and running back carries follow recent volume, shrunk toward a typical week. Yards are that volume times a shrunk per-play rate. The bar is a fixed window around the median, about eight attempts, 70 passing yards, five carries, and 32 rushing yards either side. If the leader is out or doubtful, the line moves to the next player with enough recent work. Only an unavailable quarterback changes the team score, by 3.5 points. It is not a sportsbook prop and not a full player simulation.

@@ -363,16 +363,36 @@ def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
         [row["totalFeatures"] for row in training],
         [row["total"] for row in training],
     )
-    fitted_margins = np.asarray(
-        [
-            float(np.dot(row["marginFeatures"], margin_beta))
-            for row in training
+    # Calibrate only on predictions made by models that had not seen the
+    # predicted season. This avoids an optimistic probability slope caused by
+    # calibrating against the final regression's in-sample fitted values.
+    calibration_margins: list[float] = []
+    calibration_outcomes: list[float] = []
+    for held_out_season in sorted({int(row["season"]) for row in training}):
+        prior = [
+            row for row in training if int(row["season"]) < held_out_season
         ]
-    )
-    logistic_beta = fit_logistic(
-        fitted_margins,
-        [row["homeOutcome"] for row in training],
-    )
+        held_out = [
+            row for row in training if int(row["season"]) == held_out_season
+        ]
+        if len(prior) < 500:
+            continue
+        fold_beta = fit_ridge(
+            [row["marginFeatures"] for row in prior],
+            [row["margin"] for row in prior],
+        )
+        calibration_margins.extend(
+            float(np.dot(row["marginFeatures"], fold_beta))
+            for row in held_out
+        )
+        calibration_outcomes.extend(row["homeOutcome"] for row in held_out)
+    if len(calibration_margins) >= 500:
+        logistic_beta = fit_logistic(
+            np.asarray(calibration_margins),
+            calibration_outcomes,
+        )
+    else:
+        logistic_beta = np.array([0.0, 0.13])
     return {
         "margin": margin_beta,
         "total": total_beta,
@@ -1153,7 +1173,10 @@ def summarize(games: list[dict]) -> dict:
             margin_err.append(abs(margin - (-pred["spreadHome"])))
             total_err.append(abs(actual["total"] - pred["total"]))
             outcome = 1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
-            brier.append((pred["homeWinProb"] - outcome) ** 2)
+            # Binary Brier treats a final tie as half a home win. Match that
+            # target by assigning half of the explicit tie probability to home.
+            home_equivalent = pred["homeWinProb"] + 0.5 * pred["tieProb"]
+            brier.append((home_equivalent - outcome) ** 2)
             if game["postedHomeWinProb"] is not None:
                 market.append((game["postedHomeWinProb"] - outcome) ** 2)
             home_low, home_high = pred["homeRange"]
