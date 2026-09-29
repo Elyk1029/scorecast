@@ -843,7 +843,10 @@ def forecast_game(
             {
                 "label": "Home field",
                 "points": round(component(1), 1),
-                "detail": "Learned from completed prior seasons. Neutral sites get none.",
+                "detail": (
+                    "Extra margin for a true home game beyond the league baseline. "
+                    "Neutral sites omit this row."
+                ),
             }
         )
     if abs(component(0)) >= 0.1:
@@ -851,7 +854,10 @@ def forecast_game(
             {
                 "label": "League baseline",
                 "points": round(component(0), 1),
-                "detail": "The fitted difference between the home-score and away-score intercepts.",
+                "detail": (
+                    "Gap between the home-score and away-score intercepts. Most of "
+                    "the ordinary home advantage sits here, including at neutral sites."
+                ),
             }
         )
     if qb_home_points or qb_away_points:

@@ -36,7 +36,7 @@ export default function MethodPage() {
           A week becomes locked when it is the current slate. Later refreshes add the scoreboard but keep its score, probability, players, context, and comparison line unchanged. Future weeks are provisional. Older reconstructed games are labeled as backtests rather than pretending they were published live.
         </Section>
         <Section title="Home field">
-          Home field is the gap between the home-score and away-score field coefficients, currently {formatSigned(file.homeField)} points on the margin, fit from completed prior seasons. Neutral sites get none of it. It is one row on the game sheet, not a secret factor.
+          The home-field row is the extra margin for a true home game beyond the league baseline, currently {formatSigned(file.homeField)} points. Most of the ordinary home advantage stays in the baseline, because nearly every training game is at home and the penalty leaves that average in the intercept. Neutral sites omit the home-field row and still receive the baseline. Both numbers are fit from completed prior seasons.
         </Section>
         <Section title="Quarterback">
           The most recent starter has a passing-EPA rating with 100 plays of league-average prior weight and offseason regression. Only information through the previous week is used. That rating enters both score equations, so it can move either team’s points, the margin, and the total. If that starter is out or doubtful before an upcoming game, the separate availability override docks the team 3.5 points. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
