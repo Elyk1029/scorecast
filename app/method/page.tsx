@@ -18,7 +18,7 @@ export default function MethodPage() {
       <PageHeader
         eyebrow="Method"
         title="How the number is made"
-        lede="Short version: scoring form, Elo strength, rest, and home field estimate the margin; quarterback form also helps estimate the total. A separate calibration turns margin into win probability. Every coefficient is trained on completed prior seasons only."
+        lede="Short version: separate home and away score regressions use scoring form, the opponent’s defense, Elo, rest, home field, and quarterback form. Margin and total come from those two scores. A separate calibration turns margin into win probability. Every coefficient is trained on completed prior seasons only."
       />
       <p className="text-xs tracking-wide text-uncertainty uppercase">
         {file.modelVersion} · updated {formatGenerated(file.generatedAt)} · home field{" "}
@@ -27,22 +27,22 @@ export default function MethodPage() {
 
       <div className="max-w-2xl space-y-6 text-sm leading-6">
         <Section title="Past games only">
-          The entire week is forecast before any result from that week updates a rating, so a Sunday result cannot leak into another game on the same slate. Scoring form and Elo carry into a new season at reduced strength. The regression and probability coefficients are then fit once using completed prior seasons and held fixed for the season being forecast.
+          The entire week is forecast before any result from that week updates a rating, so a Sunday result cannot leak into another game on the same slate. Scoring form and Elo carry into a new season at reduced strength. The score and probability coefficients are then fit once using completed prior seasons and held fixed for the season being forecast.
         </Section>
         <Section title="The score">
-          A ridge regression estimates margin from rolling points scored and allowed, Elo difference, rest difference, and home field. A second regression estimates the total from scoring form, the strength gap, and both recent starters’ passing form. Quarterback form was retained for the total only: it lowered held-out total error but did not improve the side or win probability. The published score is the fitted mean, rounded; accuracy uses the unrounded margin and total.
+          Two ridge regressions estimate home points and away points. Each uses the team’s recent scoring, the opponent’s recent points allowed, Elo, rest, home field, and both recent starters’ passing form. Margin is home points minus away points, and the total is their sum. The published score is each fitted mean, rounded; accuracy uses the unrounded margin, total, and team scores. This direct score model replaced a single margin regression and a single total regression because it lowered held-out error on the margin, the total, and both team scores.
         </Section>
         <Section title="Locked forecasts">
           A week becomes locked when it is the current slate. Later refreshes add the scoreboard but keep its score, probability, players, context, and comparison line unchanged. Future weeks are provisional. Older reconstructed games are labeled as backtests rather than pretending they were published live.
         </Section>
         <Section title="Home field">
-          Home field is a single number, currently {formatSigned(file.homeField)} points, fit from completed prior seasons. Neutral sites get none of it. It is one row on the game sheet, not a secret factor.
+          Home field is the gap between the home-score and away-score field coefficients, currently {formatSigned(file.homeField)} points on the margin, fit from completed prior seasons. Neutral sites get none of it. It is one row on the game sheet, not a secret factor.
         </Section>
         <Section title="Quarterback">
-          The most recent starter has a passing-EPA rating with 100 plays of league-average prior weight and offseason regression. Only information through the previous week is used, and this rating moves the expected total rather than the margin. If that starter is out or doubtful before an upcoming game, the separate availability override docks the team 3.5 points. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
+          The most recent starter has a passing-EPA rating with 100 plays of league-average prior weight and offseason regression. Only information through the previous week is used. That rating enters both score equations, so it can move either team’s points, the margin, and the total. If that starter is out or doubtful before an upcoming game, the separate availability override docks the team 3.5 points. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
         </Section>
         <Section title="Win probability">
-          A regularized logistic calibration learns how often each fitted margin became a home win in completed prior seasons. Its training margins are out-of-season predictions, not in-sample fitted values. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
+          A regularized logistic calibration learns how often each fitted margin became a home win in completed prior seasons. Its training margins are out-of-season home-score minus away-score predictions, not in-sample fitted values. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
         </Section>
         <Section title="Player lines">
           Quarterback attempts and running back carries follow recent volume, shrunk toward a typical week. Yards are that volume times a shrunk per-play rate. The bar is a fixed window around the median, about eight attempts, 70 passing yards, five carries, and 32 rushing yards either side. If the leader is out or doubtful, the line moves to the next player with enough recent work. Only an unavailable quarterback changes the team score, by 3.5 points. It is not a sportsbook prop and not a full player simulation.

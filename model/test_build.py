@@ -9,6 +9,7 @@ from model.build import (
     calibrated_probs,
     fit_forecast_model,
     freeze_published_forecasts,
+    score_features,
     summarize,
 )
 
@@ -50,32 +51,47 @@ class ForecastMathTests(unittest.TestCase):
     def test_fitted_model_produces_valid_calibrated_probabilities(self) -> None:
         training = []
         for index in range(600):
-            strength = (index % 21) - 10
-            margin = 1.5 + 0.8 * strength
+            offense = float((index % 21) - 10)
+            defense = float(((index * 3) % 17) - 8)
+            elo = offense / 4.0
+            rest = float((index % 5) - 2) / 7.0
+            field = 0.0 if index % 17 == 0 else 1.0
+            own_qb = offense / 30.0
+            opp_qb = defense / 30.0
+            home_score = 22.0 + 0.4 * offense + 0.25 * defense + 1.2 * field
+            away_score = 21.0 + 0.4 * defense + 0.25 * offense - 0.4 * field
+            margin = home_score - away_score
             training.append(
                 {
                     "season": 2010 + index // 100,
-                    "marginFeatures": [
+                    "homeFeatures": [
                         1.0,
-                        1.0,
-                        strength,
-                        strength / 4,
-                        0.0,
+                        field,
+                        offense,
+                        defense,
+                        elo,
+                        rest,
+                        60.0 * own_qb,
+                        60.0 * opp_qb,
                     ],
-                    "totalFeatures": [
+                    "awayFeatures": [
                         1.0,
-                        float(index % 9),
-                        abs(strength) / 4,
-                        strength / 8,
+                        field,
+                        defense,
+                        offense,
+                        -elo,
+                        -rest,
+                        60.0 * opp_qb,
+                        60.0 * own_qb,
                     ],
-                    "margin": margin,
-                    "total": 44.0 + (index % 9),
+                    "homeScore": home_score,
+                    "awayScore": away_score,
                     "homeOutcome": 1.0 if margin > 0 else 0.0,
                 }
             )
         model = fit_forecast_model(training)
-        self.assertEqual(model["margin"].shape, (5,))
-        self.assertEqual(model["total"].shape, (4,))
+        self.assertEqual(model["home"].shape, (8,))
+        self.assertEqual(model["away"].shape, (8,))
         self.assertEqual(model["logistic"].shape, (2,))
         home, tie = calibrated_probs(3.0, model["logistic"])
         self.assertTrue(np.isfinite(model["logistic"]).all())
@@ -187,7 +203,7 @@ class ForecastMathTests(unittest.TestCase):
         game = weeks[0]["games"][0]
         self.assertEqual(game["prediction"], new_prediction)
         self.assertEqual(game["recordKind"], "backtest")
-        self.assertEqual(game["forecastModelVersion"], "yardline-3.1")
+        self.assertEqual(game["forecastModelVersion"], "yardline-3.2")
 
     def test_accuracy_uses_raw_means_and_paired_market_cohort(self) -> None:
         game = {
@@ -225,6 +241,52 @@ class ForecastMathTests(unittest.TestCase):
         self.assertEqual(overall["marketMarginMae"], 2.0)
         self.assertEqual(overall["pairedTotalMae"], 3.3)
         self.assertEqual(overall["marketTotalMae"], 2.0)
+        self.assertEqual(overall["homeScoreMae"], 3.35)
+        self.assertEqual(overall["awayScoreMae"], 0.05)
+        self.assertEqual(overall["pairedHomeScoreMae"], 3.35)
+        self.assertEqual(overall["marketHomeScoreMae"], 2.0)
+        self.assertEqual(overall["pairedAwayScoreMae"], 0.05)
+        self.assertEqual(overall["marketAwayScoreMae"], 0.0)
+        self.assertEqual(overall["scoreGames"], 1)
+
+    def test_score_features_swap_sides_and_flip_edges(self) -> None:
+        home = Rating()
+        away = Rating()
+        home.points_off = 3.0
+        home.points_def = -1.0
+        home.elo = 40.0
+        away.points_off = -2.0
+        away.points_def = 1.0
+        away.elo = -10.0
+        home_qb = QuarterbackRating()
+        away_qb = QuarterbackRating()
+        home_qb.epa = 0.1
+        away_qb.epa = -0.05
+        home_x, away_x = score_features(
+            {"location": "Home", "home_rest": 10, "away_rest": 7},
+            home,
+            away,
+            home_qb,
+            away_qb,
+        )
+        self.assertEqual(len(home_x), 8)
+        self.assertEqual(len(away_x), 8)
+        self.assertAlmostEqual(home_x[2], 3.0)
+        self.assertAlmostEqual(away_x[2], -2.0)
+        self.assertAlmostEqual(home_x[3], 1.0)
+        self.assertAlmostEqual(away_x[3], -1.0)
+        self.assertAlmostEqual(home_x[4], -away_x[4])
+        self.assertAlmostEqual(home_x[5], -away_x[5])
+        self.assertAlmostEqual(home_x[6], 6.0)
+        self.assertAlmostEqual(away_x[6], -3.0)
+        self.assertAlmostEqual(home_x[7], away_x[6])
+        self.assertAlmostEqual(away_x[7], home_x[6])
+
+    def test_short_history_uses_eight_score_coefficients(self) -> None:
+        model = fit_forecast_model([])
+        self.assertEqual(model["home"].shape, (8,))
+        self.assertEqual(model["away"].shape, (8,))
+        self.assertEqual(model["logistic"].shape, (2,))
 
 
 if __name__ == "__main__":

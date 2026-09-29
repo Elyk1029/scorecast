@@ -58,6 +58,16 @@ function SliceView({ slice, seasonLabel }: { slice: AccuracySlice; seasonLabel?:
           hint="Average absolute miss on the combined score."
         />
         <Stat
+          label="Home score MAE"
+          value={slice.homeScoreMae.toFixed(2)}
+          hint="Average absolute miss on the home team’s points."
+        />
+        <Stat
+          label="Away score MAE"
+          value={slice.awayScoreMae.toFixed(2)}
+          hint="Average absolute miss on the away team’s points."
+        />
+        <Stat
           label="Brier"
           value={slice.brier.toFixed(3)}
           hint="Squared error of the home win probability. A coin flip is 0.250."
@@ -101,9 +111,21 @@ function SliceView({ slice, seasonLabel }: { slice: AccuracySlice; seasonLabel?:
               yardline={slice.pairedTotalMae}
               digits={2}
             />
+            <ComparisonRow
+              label="Home score MAE"
+              market={slice.marketHomeScoreMae}
+              yardline={slice.pairedHomeScoreMae}
+              digits={2}
+            />
+            <ComparisonRow
+              label="Away score MAE"
+              market={slice.marketAwayScoreMae}
+              yardline={slice.pairedAwayScoreMae}
+              digits={2}
+            />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            nflverse moneyline, spread, and total with vig removed from the moneyline. Each row uses identical games: win {slice.marketGames}, spread {slice.spreadGames}, total {slice.totalGames}. Lower is sharper.
+            nflverse moneyline, spread, and total with vig removed from the moneyline. Each row uses identical games: win {slice.marketGames}, spread {slice.spreadGames}, total {slice.totalGames}, team scores {slice.scoreGames}. Lower is sharper.
           </p>
         </CardContent>
       </Card>

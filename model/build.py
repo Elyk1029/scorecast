@@ -38,7 +38,7 @@ SEASONS = [2023, 2024, 2025, 2026]
 TRAINING_SEASONS = list(range(2010, 2027))
 PUBLISH_FROM = 2024
 PLAYS = 60.0
-MODEL_VERSION = "yardline-3.1"
+MODEL_VERSION = "yardline-3.2"
 # Plays of memory carried into a new season. About one or two games, so a
 # three-game stretch can outweigh last year without letting one Sunday rewrite it.
 SEASON_PRIOR_PLAYS = 80.0
@@ -46,7 +46,9 @@ SEASON_PRIOR_PLAYS = 80.0
 # model's historical win rate, so the published probability is pulled toward 0.5.
 MARGIN_SD = 13.5
 WIN_SHRINK = 0.28
-RIDGE_PENALTY = 100.0
+# Penalty on the home and away score equations. Selected on 2021–2023
+# holdouts; 100 was nearly identical and 300 had the lower combined error.
+SCORE_PENALTY = 300.0
 LOGISTIC_PENALTY = 10.0
 
 # City, nickname, hours behind Eastern.
@@ -344,7 +346,7 @@ def shrunk_rate(total: float, count: float, prior: float, prior_n: float) -> flo
 def fit_ridge(
     features: list[list[float]],
     targets: list[float],
-    penalty: float = RIDGE_PENALTY,
+    penalty: float = SCORE_PENALTY,
 ) -> np.ndarray:
     x = np.asarray(features, dtype=float)
     y = np.asarray(targets, dtype=float)
@@ -374,22 +376,52 @@ def fit_logistic(
     return beta
 
 
+def fallback_model() -> dict[str, np.ndarray]:
+    """Priors used only before 500 completed games exist."""
+    return {
+        "home": np.array([22.5, 1.2, 0.35, 0.35, 1.25, 0.25, 0.08, 0.04]),
+        "away": np.array([22.0, -0.5, 0.35, 0.35, 1.25, 0.25, 0.08, 0.04]),
+        "logistic": np.array([0.0, 0.13]),
+    }
+
+
+def home_field_edge(model: dict[str, np.ndarray]) -> float:
+    """Margin points from playing at home: home-score field minus away-score field."""
+    return float(model["home"][1] - model["away"][1])
+
+
+def fit_score_pair(
+    rows: list[dict],
+    penalty: float = SCORE_PENALTY,
+) -> tuple[np.ndarray, np.ndarray]:
+    home_beta = fit_ridge(
+        [row["homeFeatures"] for row in rows],
+        [row["homeScore"] for row in rows],
+        penalty,
+    )
+    away_beta = fit_ridge(
+        [row["awayFeatures"] for row in rows],
+        [row["awayScore"] for row in rows],
+        penalty,
+    )
+    return home_beta, away_beta
+
+
+def predicted_margin(
+    row: dict,
+    home_beta: np.ndarray,
+    away_beta: np.ndarray,
+) -> float:
+    return float(
+        np.dot(row["homeFeatures"], home_beta) - np.dot(row["awayFeatures"], away_beta)
+    )
+
+
 def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
     """Fit only completed prior-season rows; never use the season being scored."""
     if len(training) < 500:
-        return {
-            "margin": np.array([0.0, 1.7, 0.30, 2.5, 0.5]),
-            "total": np.array([45.0, 0.35, -0.2, 0.0]),
-            "logistic": np.array([0.0, 0.13]),
-        }
-    margin_beta = fit_ridge(
-        [row["marginFeatures"] for row in training],
-        [row["margin"] for row in training],
-    )
-    total_beta = fit_ridge(
-        [row["totalFeatures"] for row in training],
-        [row["total"] for row in training],
-    )
+        return fallback_model()
+    home_beta, away_beta = fit_score_pair(training)
     # Calibrate only on predictions made by models that had not seen the
     # predicted season. This avoids an optimistic probability slope caused by
     # calibrating against the final regression's in-sample fitted values.
@@ -404,13 +436,9 @@ def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
         ]
         if len(prior) < 500:
             continue
-        fold_beta = fit_ridge(
-            [row["marginFeatures"] for row in prior],
-            [row["margin"] for row in prior],
-        )
+        fold_home, fold_away = fit_score_pair(prior)
         calibration_margins.extend(
-            float(np.dot(row["marginFeatures"], fold_beta))
-            for row in held_out
+            predicted_margin(row, fold_home, fold_away) for row in held_out
         )
         calibration_outcomes.extend(row["homeOutcome"] for row in held_out)
     if len(calibration_margins) >= 500:
@@ -421,34 +449,54 @@ def fit_forecast_model(training: list[dict]) -> dict[str, np.ndarray]:
     else:
         logistic_beta = np.array([0.0, 0.13])
     return {
-        "margin": margin_beta,
-        "total": total_beta,
+        "home": home_beta,
+        "away": away_beta,
         "logistic": logistic_beta,
     }
 
 
-def forecast_features(
+def score_features(
     row: dict,
     home_rating: Rating,
     away_rating: Rating,
     home_qb: QuarterbackRating,
     away_qb: QuarterbackRating,
-    league_points: float,
 ) -> tuple[list[float], list[float]]:
+    """Home and away score features.
+
+    Columns: intercept, home field, own offense, opposing defense, signed
+    Elo/100, signed rest/7, own quarterback form, opposing quarterback form.
+    Elo and rest flip sign on the away side. Offense, defense, and the two
+    quarterback slots swap so each equation is from that team's point of view.
+    """
     field = 0.0 if row["location"] == "Neutral" else 1.0
-    home_strength = home_rating.points_off + away_rating.points_def
-    away_strength = away_rating.points_off + home_rating.points_def
-    score_margin = home_strength - away_strength
-    score_total = 2.0 * league_points + home_strength + away_strength
     home_rest = float(row.get("home_rest") or 7)
     away_rest = float(row.get("away_rest") or 7)
     rest_edge = float(np.clip(home_rest - away_rest, -7, 7)) / 7.0
     elo_edge = (home_rating.elo - away_rating.elo) / 100.0
-    qb_total = PLAYS * (home_qb.epa + away_qb.epa)
-    return (
-        [1.0, field, score_margin, elo_edge, rest_edge],
-        [1.0, score_total - 45.0, abs(elo_edge), qb_total],
-    )
+    home_qb_form = PLAYS * home_qb.epa
+    away_qb_form = PLAYS * away_qb.epa
+    home_x = [
+        1.0,
+        field,
+        home_rating.points_off,
+        away_rating.points_def,
+        elo_edge,
+        rest_edge,
+        home_qb_form,
+        away_qb_form,
+    ]
+    away_x = [
+        1.0,
+        field,
+        away_rating.points_off,
+        home_rating.points_def,
+        -elo_edge,
+        -rest_edge,
+        away_qb_form,
+        home_qb_form,
+    ]
+    return home_x, away_x
 
 
 def main() -> None:
@@ -524,7 +572,7 @@ def main() -> None:
     last_quarterback: dict[str, str] = {}
     training_rows: list[dict] = []
     current_model = fit_forecast_model(training_rows)
-    home_field = float(current_model["margin"][1])
+    home_field = home_field_edge(current_model)
     league_points_sum = 22.5 * 200.0
     league_team_games = 200.0
     weeks_out: list[dict] = []
@@ -553,15 +601,14 @@ def main() -> None:
                 recent[abbr] = recent[abbr][-6:]
         if season != last_season:
             current_model = fit_forecast_model(training_rows)
-            home_field = float(current_model["margin"][1])
+            home_field = home_field_edge(current_model)
         last_season = season
 
         league_points = league_points_sum / league_team_games
         before = {abbr: ratings[abbr].snapshot() for abbr in TEAMS}
         games_out = []
-        features_by_id: dict[str, tuple[list[float], list[float]]] = {}
         for row in week_rows[(season, week)]:
-            margin_features, total_features = forecast_features(
+            home_features, away_features = score_features(
                 row,
                 ratings[row["home_team"]],
                 ratings[row["away_team"]],
@@ -573,29 +620,26 @@ def main() -> None:
                     last_quarterback.get(row["away_team"], ""),
                     QuarterbackRating(),
                 ),
-                league_points,
             )
-            features_by_id[row["game_id"]] = (margin_features, total_features)
             game = forecast_game(
                 row,
                 recent,
                 injury_index,
                 player_index,
                 current_model,
-                margin_features,
-                total_features,
+                home_features,
+                away_features,
             )
             games_out.append(game)
             if game["actual"] is not None:
                 margin = float(game["actual"]["margin"])
-                total = float(game["actual"]["total"])
                 training_rows.append(
                     {
                         "season": season,
-                        "marginFeatures": margin_features,
-                        "totalFeatures": total_features,
-                        "margin": margin,
-                        "total": total,
+                        "homeFeatures": home_features,
+                        "awayFeatures": away_features,
+                        "homeScore": float(game["actual"]["homeScore"]),
+                        "awayScore": float(game["actual"]["awayScore"]),
                         "homeOutcome": (
                             1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
                         ),
@@ -699,7 +743,22 @@ def main() -> None:
     overall = payload["accuracy"]["overall"]
     print(
         f"Finished games {overall['games']} straight-up {overall['straightUp']:.1%} "
-        f"margin MAE {overall['marginMae']:.2f} Brier {overall['brier']:.3f}"
+        f"margin MAE {overall['marginMae']:.2f} total MAE {overall['totalMae']:.2f} "
+        f"home {overall['homeScoreMae']:.2f} away {overall['awayScoreMae']:.2f} "
+        f"Brier {overall['brier']:.3f}"
+    )
+
+
+def margin_component(
+    model: dict[str, np.ndarray],
+    home_features: list[float],
+    away_features: list[float],
+    index: int,
+) -> float:
+    """Home-margin points from one column of the two score equations."""
+    return float(
+        model["home"][index] * home_features[index]
+        - model["away"][index] * away_features[index]
     )
 
 
@@ -709,21 +768,24 @@ def forecast_game(
     injury_index: dict[tuple[int, int, str, str], str],
     player_index: dict[tuple[int, int, str], list[dict]],
     model: dict[str, np.ndarray],
-    margin_features: list[float],
-    total_features: list[float],
+    home_features: list[float],
+    away_features: list[float],
 ) -> dict:
     home = row["home_team"]
     away = row["away_team"]
     neutral = row["location"] == "Neutral"
-    raw_margin = float(np.dot(margin_features, model["margin"]))
-    base_total = float(np.dot(total_features, model["total"]))
+    home_hat = float(np.dot(home_features, model["home"]))
+    away_hat = float(np.dot(away_features, model["away"]))
+    raw_margin = home_hat - away_hat
 
     upcoming = row["home_score"] is None or row["away_score"] is None
     qb_note, qb_home_points, qb_away_points = quarterback_adjustment(
         row, recent, injury_index, use_injuries=upcoming
     )
-    expected_total = base_total + qb_home_points + qb_away_points
-    expected_margin = raw_margin + qb_home_points - qb_away_points
+    home_mean_raw = home_hat + qb_home_points
+    away_mean_raw = away_hat + qb_away_points
+    expected_total = home_mean_raw + away_mean_raw
+    expected_margin = home_mean_raw - away_mean_raw
     home_mean, away_mean = bounded_means(expected_total, expected_margin)
 
     expected_margin = float(home_mean - away_mean)
@@ -737,18 +799,34 @@ def forecast_game(
     context = context_lines(row, wind, indoor, neutral, qb_note)
     xfactor = x_factor(row, wind, indoor, neutral)
 
+    def component(index: int) -> float:
+        return margin_component(model, home_features, away_features, index)
+
     adjustments = [
         {
-            "label": "Scoring form",
-            "points": round(model["margin"][2] * margin_features[2], 1),
+            "label": "Offense",
+            "points": round(component(2), 1),
             "detail": (
-                "Opponent-aware points scored and allowed, updated only after the "
-                "whole prior week is complete."
+                "Recent points scored, relative to the league average, updated "
+                "only after the whole prior week is complete."
+            ),
+        },
+        {
+            "label": "Opposing defense",
+            "points": round(component(3), 1),
+            "detail": "Recent points allowed by the opponent, relative to the league average.",
+        },
+        {
+            "label": "Quarterback form",
+            "points": round(component(6) + component(7), 1),
+            "detail": (
+                "Shrunk passing EPA of the most recent starters, scaled to a "
+                "60-play game. It moves both team scores."
             ),
         },
         {
             "label": "Elo strength",
-            "points": round(model["margin"][3] * margin_features[3], 1),
+            "points": round(component(4), 1),
             "detail": (
                 "A result-based team-strength rating trained on completed prior "
                 "seasons. It does not use the betting line."
@@ -756,7 +834,7 @@ def forecast_game(
         },
         {
             "label": "Rest",
-            "points": round(model["margin"][4] * margin_features[4], 1),
+            "points": round(component(5), 1),
             "detail": "Difference in days of rest, capped at one week either way.",
         },
     ]
@@ -764,16 +842,16 @@ def forecast_game(
         adjustments.append(
             {
                 "label": "Home field",
-                "points": round(model["margin"][1], 1),
+                "points": round(component(1), 1),
                 "detail": "Learned from completed prior seasons. Neutral sites get none.",
             }
         )
-    if abs(float(model["margin"][0])) >= 0.1:
+    if abs(component(0)) >= 0.1:
         adjustments.append(
             {
                 "label": "League baseline",
-                "points": round(float(model["margin"][0]), 1),
-                "detail": "The fitted home-margin intercept for this season's model.",
+                "points": round(component(0), 1),
+                "detail": "The fitted difference between the home-score and away-score intercepts.",
             }
         )
     if qb_home_points or qb_away_points:
@@ -1220,6 +1298,13 @@ def summarize(games: list[dict]) -> dict:
                 "marketTotalMae": None,
                 "pairedTotalMae": None,
                 "totalGames": 0,
+                "homeScoreMae": 0,
+                "awayScoreMae": 0,
+                "marketHomeScoreMae": None,
+                "pairedHomeScoreMae": None,
+                "marketAwayScoreMae": None,
+                "pairedAwayScoreMae": None,
+                "scoreGames": 0,
             }
         correct = 0
         margin_err = []
@@ -1231,6 +1316,12 @@ def summarize(games: list[dict]) -> dict:
         paired_margin = []
         market_total = []
         paired_total = []
+        home_err = []
+        away_err = []
+        market_home = []
+        paired_home = []
+        market_away = []
+        paired_away = []
         covered = 0
         decided = 0
         for game in subset:
@@ -1248,8 +1339,12 @@ def summarize(games: list[dict]) -> dict:
             decided += 1
             predicted_margin = pred.get("meanMargin", -pred["spreadHome"])
             predicted_total = pred.get("meanTotal", pred["total"])
+            predicted_home = (predicted_total + predicted_margin) / 2.0
+            predicted_away = (predicted_total - predicted_margin) / 2.0
             margin_err.append(abs(margin - predicted_margin))
             total_err.append(abs(actual["total"] - predicted_total))
+            home_err.append(abs(actual["homeScore"] - predicted_home))
+            away_err.append(abs(actual["awayScore"] - predicted_away))
             outcome = 1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
             # Binary Brier treats a final tie as half a home win. Match that
             # target by assigning half of the explicit tie probability to home.
@@ -1268,6 +1363,18 @@ def summarize(games: list[dict]) -> dict:
                 market_total.append(
                     abs(actual["total"] - float(game["postedTotal"]))
                 )
+            if (
+                game["postedSpreadHome"] is not None
+                and game["postedTotal"] is not None
+            ):
+                market_margin_pts = -float(game["postedSpreadHome"])
+                market_total_pts = float(game["postedTotal"])
+                market_home_pts = (market_total_pts + market_margin_pts) / 2.0
+                market_away_pts = (market_total_pts - market_margin_pts) / 2.0
+                paired_home.append(abs(actual["homeScore"] - predicted_home))
+                paired_away.append(abs(actual["awayScore"] - predicted_away))
+                market_home.append(abs(actual["homeScore"] - market_home_pts))
+                market_away.append(abs(actual["awayScore"] - market_away_pts))
             home_low, home_high = pred["homeRange"]
             away_low, away_high = pred["awayRange"]
             if home_low <= actual["homeScore"] <= home_high and away_low <= actual["awayScore"] <= away_high:
@@ -1296,6 +1403,21 @@ def summarize(games: list[dict]) -> dict:
                 None if not paired_total else round(float(np.mean(paired_total)), 2)
             ),
             "totalGames": len(market_total),
+            "homeScoreMae": round(float(np.mean(home_err)), 2),
+            "awayScoreMae": round(float(np.mean(away_err)), 2),
+            "marketHomeScoreMae": (
+                None if not market_home else round(float(np.mean(market_home)), 2)
+            ),
+            "pairedHomeScoreMae": (
+                None if not paired_home else round(float(np.mean(paired_home)), 2)
+            ),
+            "marketAwayScoreMae": (
+                None if not market_away else round(float(np.mean(market_away)), 2)
+            ),
+            "pairedAwayScoreMae": (
+                None if not paired_away else round(float(np.mean(paired_away)), 2)
+            ),
+            "scoreGames": len(market_home),
         }
 
     by_season = {}

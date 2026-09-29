@@ -141,6 +141,13 @@ export type AccuracySlice = {
   marketTotalMae: number | null
   pairedTotalMae: number | null
   totalGames: number
+  homeScoreMae: number
+  awayScoreMae: number
+  marketHomeScoreMae: number | null
+  pairedHomeScoreMae: number | null
+  marketAwayScoreMae: number | null
+  pairedAwayScoreMae: number | null
+  scoreGames: number
   season?: number
   week?: number
 }
