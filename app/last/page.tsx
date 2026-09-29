@@ -35,7 +35,11 @@ export default function LastPage() {
     <WeekBoard
       week={week}
       eyebrow="Last week"
-      lede="The forecast from the previous week, still sitting next to the scoreboard. Use it to see the miss, not to rewrite the number."
+      lede={
+        week.games.every((game) => game.recordKind === "backtest")
+          ? "A walk-forward reconstruction using only earlier weeks. It was not published live."
+          : "The locked forecast from the previous week, still sitting next to the scoreboard."
+      }
     />
   );
 }

@@ -40,7 +40,9 @@ export default async function WeekPage({
       lede={
         current
           ? "The current slate. Amber is still the forecast until the game is final."
-          : "An archived week. The forecast was made before these games, then left in place."
+          : slate.games.every((game) => game.recordKind === "backtest")
+            ? "A walk-forward reconstruction: each game used only earlier weeks, but this number was not published live."
+            : "An archived week. Locked forecasts stay unchanged after publication."
       }
     />
   );

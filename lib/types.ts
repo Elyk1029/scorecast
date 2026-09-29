@@ -111,6 +111,10 @@ export type Game = {
   postedSpreadHome: number | null
   postedTotal: number | null
   postedHomeWinProb: number | null
+  forecastedAt: string | null
+  forecastModelVersion: string
+  locked: boolean
+  recordKind: "published" | "backtest" | "provisional"
 }
 
 export type Week = {

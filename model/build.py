@@ -31,8 +31,7 @@ OUT = ROOT / "data" / "season.json"
 SEASONS = [2023, 2024, 2025, 2026]
 PUBLISH_FROM = 2024
 PLAYS = 60.0
-SIMS = 2500
-MODEL_VERSION = "yardline-1.4"
+MODEL_VERSION = "yardline-2.0"
 # Plays of memory carried into a new season. About one or two games, so a
 # three-game stretch can outweigh last year without letting one Sunday rewrite it.
 SEASON_PRIOR_PLAYS = 80.0
@@ -96,14 +95,21 @@ class Rating:
         self.def_n = SEASON_PRIOR_PLAYS
         self.games = 0
 
-    def update(self, off_epa: float, def_epa: float, plays: float) -> None:
-        plays = max(plays, 1.0)
-        off_a = plays / (plays + self.off_n)
-        def_a = plays / (plays + self.def_n)
+    def update(
+        self,
+        off_epa: float,
+        def_epa: float,
+        off_plays: float,
+        def_plays: float,
+    ) -> None:
+        off_plays = max(off_plays, 1.0)
+        def_plays = max(def_plays, 1.0)
+        off_a = off_plays / (off_plays + self.off_n)
+        def_a = def_plays / (def_plays + self.def_n)
         self.off = (1 - off_a) * self.off + off_a * off_epa
         self.defn = (1 - def_a) * self.defn + def_a * def_epa
-        self.off_n = min(260.0, self.off_n + plays * 0.2)
-        self.def_n = min(260.0, self.def_n + plays * 0.2)
+        self.off_n = min(260.0, self.off_n + off_plays * 0.2)
+        self.def_n = min(260.0, self.def_n + def_plays * 0.2)
         self.games += 1
 
 
@@ -133,43 +139,6 @@ def no_vig(home_odds: int | None, away_odds: int | None) -> float | None:
     return home / total
 
 
-def simulate_score(
-    home_mean: float, away_mean: float, n: int, rng: np.random.Generator
-) -> tuple[np.ndarray, np.ndarray]:
-    """Integer scores with a realistic miss size.
-
-    Margin noise is about 13.5 points and the total noise is about 11, which is
-    the historical width of an NFL forecast. Independent drive draws were too
-    narrow, so the published 10th–90th band did not cover 80% of results.
-    """
-    margin = home_mean - away_mean
-    total = home_mean + away_mean
-    # Wider than the win-probability scale. The point forecast is often off by
-    # about a touchdown, so the published band has to be wide enough to cover it.
-    margin_noise = rng.normal(0, 18.0, n)
-    total_noise = rng.normal(0, 16.0, n)
-    home = np.clip(np.round((total + total_noise + margin + margin_noise) / 2), 0, 70)
-    away = np.clip(np.round((total + total_noise - (margin + margin_noise)) / 2), 0, 70)
-    return home.astype(int), away.astype(int)
-
-
-def sample_scores(mean: float, n: int, rng: np.random.Generator) -> np.ndarray:
-    drives = 11
-    mean = float(np.clip(mean, 3, 45))
-    p_td = float(np.clip(mean * 0.64 / (7 * drives), 0.02, 0.42))
-    p_fg = float(np.clip(mean * 0.32 / (3 * drives), 0.01, 0.30))
-    expected = drives * (7 * p_td + 3 * p_fg)
-    scale = mean / expected if expected else 1.0
-    p_td = min(0.48, p_td * scale)
-    p_fg = min(0.36, p_fg * scale * 0.92)
-    draws = rng.random((n, drives))
-    xp = rng.random((n, drives))
-    td = draws < p_td
-    fg = (draws >= p_td) & (draws < p_td + p_fg)
-    points = td * np.where(xp > 0.06, 7, 6) + fg * 3
-    return points.sum(axis=1).astype(int)
-
-
 def score_band(mean: float) -> list[int]:
     """Window that held both scores in about 80% of past games.
 
@@ -188,10 +157,9 @@ def normal_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-# Regular-season overtime is 10 minutes. Most regulation ties become a field
-# goal for one side. About one overtime in ten is still level when the clock expires.
-OT_POINTS = 3.0
-OT_STILL_TIED = 0.10
+# Since the 10-minute period began, roughly six percent of regular-season
+# overtimes have still been level when time expired.
+OT_STILL_TIED = 0.06
 
 
 def regulation_tie_prob(expected_margin: float) -> float:
@@ -213,30 +181,91 @@ def calibrated_probs(expected_margin: float) -> tuple[float, float]:
     p_home_reg = max(0.0, raw - 0.5 * p_reg_tie)
     edge = math.tanh(expected_margin / 3.0)
     home_given_ot = (1.0 - OT_STILL_TIED) * (0.5 + 0.08 * edge)
-    p_home = p_home_reg + p_reg_tie * home_given_ot
-    home = 0.5 + WIN_SHRINK * (p_home - 0.5)
     tie = p_reg_tie * OT_STILL_TIED
+    p_home = p_home_reg + p_reg_tie * home_given_ot
+    decisive = max(1.0 - tie, 1e-9)
+    conditional_home = p_home / decisive
+    conditional_home = 0.5 + WIN_SHRINK * (conditional_home - 0.5)
+    home = decisive * conditional_home
     return home, tie
 
 
-def apply_overtime(
-    home_mean: float, away_mean: float, neutral: bool
-) -> tuple[int, int, float, bool]:
-    """Break a rounded regulation tie with the usual overtime field goal.
+def bounded_means(total: float, margin: float) -> tuple[float, float]:
+    """Keep score, total, and margin mathematically consistent while clipping."""
+    total = float(np.clip(total, 12.0, 84.0))
+    min_margin = max(12.0 - total, total - 84.0)
+    max_margin = min(84.0 - total, total - 12.0)
+    margin = float(np.clip(margin, min_margin, max_margin))
+    return (total + margin) / 2.0, (total - margin) / 2.0
 
-    The points go to the team with the higher unrounded score. A dead heat at
-    home goes to the home team. A dead heat on a neutral field stays level,
-    because overtime is a coin flip and neither side has earned the kick.
+
+def game_key(game: dict) -> tuple[int, int]:
+    return int(game["season"]), int(game["week"])
+
+
+def freeze_published_forecasts(
+    weeks: list[dict],
+    current: dict,
+    previous: dict | None,
+    generated_at: str,
+) -> None:
+    """Keep every forecast users could already have seen unchanged.
+
+    The previous current week and every week before it are immutable. Future
+    schedule rows remain provisional until their week becomes current.
     """
-    home_score = int(round(home_mean))
-    away_score = int(round(away_mean))
-    if home_score != away_score:
-        return home_score, away_score, 0.0, False
-    if away_mean > home_mean:
-        return home_score, away_score + int(OT_POINTS), -OT_POINTS, True
-    if home_mean > away_mean or not neutral:
-        return home_score + int(OT_POINTS), away_score, OT_POINTS, True
-    return home_score, away_score, 0.0, True
+    old_games = {
+        game["id"]: game
+        for week in (previous or {}).get("weeks", [])
+        for game in week["games"]
+    }
+    old_current = (previous or {}).get("current")
+    old_cutoff = (
+        (int(old_current["season"]), int(old_current["week"]))
+        if old_current
+        else None
+    )
+    new_cutoff = (int(current["season"]), int(current["week"]))
+    frozen_fields = (
+        "prediction",
+        "players",
+        "adjustments",
+        "context",
+        "xfactor",
+        "postedSpreadHome",
+        "postedTotal",
+        "postedHomeWinProb",
+    )
+
+    for week in weeks:
+        for game in week["games"]:
+            key = game_key(game)
+            old = old_games.get(game["id"])
+            if old is not None and old_cutoff is not None and key <= old_cutoff:
+                for field in frozen_fields:
+                    game[field] = old[field]
+                game["forecastedAt"] = old.get(
+                    "forecastedAt", (previous or {}).get("generatedAt", generated_at)
+                )
+                game["forecastModelVersion"] = old.get(
+                    "forecastModelVersion",
+                    (previous or {}).get("modelVersion", "unknown"),
+                )
+                game["locked"] = True
+                game["recordKind"] = old.get(
+                    "recordKind",
+                    "published" if key == old_cutoff else "backtest",
+                )
+            elif key <= new_cutoff:
+                game["forecastedAt"] = generated_at
+                game["forecastModelVersion"] = MODEL_VERSION
+                game["locked"] = True
+                game["recordKind"] = "published"
+            else:
+                game["forecastedAt"] = None
+                game["forecastModelVersion"] = MODEL_VERSION
+                game["locked"] = False
+                game["recordKind"] = "provisional"
 
 
 def team_payload(abbr: str) -> dict[str, str | int]:
@@ -315,11 +344,7 @@ def main() -> None:
     ratings = {abbr: Rating() for abbr in TEAMS}
     home_field = 1.7
     home_n = 40.0
-    rng = np.random.default_rng(2026)
-
     weeks_out: list[dict] = []
-    current_week_bucket: dict | None = None
-    accuracy_games: list[dict] = []
     learned: list[dict] = []
     last_season = None
 
@@ -353,11 +378,15 @@ def main() -> None:
                 injury_index,
                 player_index,
                 home_field,
-                rng,
             )
             games_out.append(game)
+
+        # Freeze the full weekly slate before learning any result from it.
+        # This also prevents co-kickoff games from depending on row order.
+        games_by_id = {game["id"]: game for game in games_out}
+        for row in week_rows[(season, week)]:
+            game = games_by_id[row["game_id"]]
             if game["actual"] is not None:
-                accuracy_games.append(game)
                 update_after_game(row, ratings, epa_lookup, recent, player_index)
                 if row["location"] != "Neutral" and game["actual"]["margin"] is not None:
                     raw = game["prediction"]["rawMargin"]
@@ -404,8 +433,17 @@ def main() -> None:
         (week for week in weeks_out if any(g["status"] == "upcoming" for g in week["games"])),
         weeks_out[-1],
     )
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    previous = json.loads(OUT.read_text()) if OUT.exists() else None
+    freeze_published_forecasts(weeks_out, current, previous, generated_at)
+    accuracy_games = [
+        game
+        for week in weeks_out
+        for game in week["games"]
+        if game["actual"] is not None
+    ]
     payload = {
-        "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generatedAt": generated_at,
         "modelVersion": MODEL_VERSION,
         "current": {"season": current["season"], "week": current["week"]},
         "homeField": round(home_field, 2),
@@ -418,7 +456,8 @@ def main() -> None:
             "The posted line is a comparison, not an input.",
             "Weather and travel are shown as context and do not change the score in this version.",
             "Win probability is a margin normal (SD 13.5) shrunk toward 0.5.",
-            "A regulation tie plays a 10-minute overtime. The score adds a field goal for the side ahead. About one overtime in ten still ends tied.",
+            "A rounded tie indicates likely overtime. About six percent of regular-season overtimes still end tied.",
+            "A locked game keeps the forecast that was published before kickoff.",
             "This is research, not a recommendation to bet.",
         ],
     }
@@ -443,7 +482,6 @@ def forecast_game(
     injury_index: dict[tuple[int, int, str, str], str],
     player_index: dict[tuple[int, int, str], list[dict]],
     home_field: float,
-    rng: np.random.Generator,
 ) -> dict:
     home = row["home_team"]
     away = row["away_team"]
@@ -459,19 +497,19 @@ def forecast_game(
     base_total = 45.0 + PLAYS * (home_epa + away_epa)
     base_total = float(np.clip(base_total, 32, 60))
 
+    upcoming = row["home_score"] is None or row["away_score"] is None
     qb_note, qb_home_points, qb_away_points = quarterback_adjustment(
-        row, recent, injury_index
+        row, recent, injury_index, use_injuries=upcoming
     )
-    home_mean = base_total / 2 + (raw_margin + field) / 2 + qb_home_points
-    away_mean = base_total / 2 - (raw_margin + field) / 2 + qb_away_points
-    home_mean = float(np.clip(home_mean, 6, 42))
-    away_mean = float(np.clip(away_mean, 6, 42))
+    expected_total = base_total + qb_home_points + qb_away_points
+    expected_margin = raw_margin + field + qb_home_points - qb_away_points
+    home_mean, away_mean = bounded_means(expected_total, expected_margin)
 
     expected_margin = float(home_mean - away_mean)
     home_wins, ties = calibrated_probs(expected_margin)
-    home_score, away_score, ot_points, overtime = apply_overtime(
-        home_mean, away_mean, neutral
-    )
+    home_score = int(round(home_mean))
+    away_score = int(round(away_mean))
+    overtime = home_score == away_score
 
     wind = parse_wind(row["wind"])
     indoor = str(row["roof"] or "").lower() in {"dome", "closed"}
@@ -514,25 +552,9 @@ def forecast_game(
                 "detail": qb_note or "Starter availability changed the expected points.",
             }
         )
-    if overtime and ot_points:
-        winner = TEAMS[home][1] if ot_points > 0 else TEAMS[away][1]
-        adjustments.append(
-            {
-                "label": "Overtime",
-                "points": ot_points,
-                "detail": (
-                    f"Regulation rounds to a tie, so this plays a 10-minute overtime. "
-                    f"The score adds a field goal for the {winner}, the usual finish. "
-                    "About one overtime in ten still ends tied."
-                ),
-            }
-        )
+    if overtime:
         context.append(
-            f"Regulation is level. The score includes an overtime field goal for the {winner}. About one overtime in ten still ends tied."
-        )
-    elif overtime:
-        context.append(
-            "Regulation is level on a neutral field. Overtime is a coin flip, so the score stays level. About one overtime in ten ends tied."
+            "The rounded score is level, so overtime is likely. The win chance accounts for overtime; about six percent of regular-season overtimes still end tied."
         )
 
     prediction = {
@@ -541,17 +563,17 @@ def forecast_game(
         "homeWinProb": round(home_wins, 3),
         "tieProb": round(ties, 3),
         "overtime": overtime,
-        "spreadHome": round_half(-(home_score - away_score)),
-        "total": round_half(home_score + away_score),
-        "homeRange": score_band(home_score),
-        "awayRange": score_band(away_score),
+        "spreadHome": round_half(-expected_margin),
+        "total": round_half(home_mean + away_mean),
+        "homeRange": score_band(home_mean),
+        "awayRange": score_band(away_mean),
         "rawMargin": round(raw_margin, 2),
     }
     home_players, home_player_notes = project_players(
-        recent.get(home, []), row, home, injury_index
+        recent.get(home, []), row, home, injury_index, use_injuries=upcoming
     )
     away_players, away_player_notes = project_players(
-        recent.get(away, []), row, away, injury_index
+        recent.get(away, []), row, away, injury_index, use_injuries=upcoming
     )
     context.extend(home_player_notes)
     context.extend(away_player_notes)
@@ -605,6 +627,7 @@ def quarterback_adjustment(
     row: dict,
     recent: dict[str, list[dict]],
     injury_index: dict[tuple[int, int, str, str], str],
+    use_injuries: bool,
 ) -> tuple[str | None, float, float]:
     notes = []
     home_points = 0.0
@@ -616,7 +639,11 @@ def quarterback_adjustment(
         starter = lead_passer(recent.get(team, []))
         if not starter:
             continue
-        status = injury_index.get((row["season"], row["week"], team, starter["player_id"]))
+        status = (
+            injury_index.get((row["season"], row["week"], team, starter["player_id"]))
+            if use_injuries
+            else None
+        )
         if status in {"Out", "Doubtful"}:
             if bucket == "home":
                 home_points -= 3.5
@@ -645,7 +672,15 @@ def lead_passer(games: list[dict]) -> dict | None:
     return None
 
 
-def unavailable(injury_index: dict, row: dict, team: str, player_id: str) -> bool:
+def unavailable(
+    injury_index: dict,
+    row: dict,
+    team: str,
+    player_id: str,
+    use_injuries: bool,
+) -> bool:
+    if not use_injuries:
+        return False
     status = injury_index.get((row["season"], row["week"], team, player_id))
     return status in {"Out", "Doubtful"}
 
@@ -655,6 +690,7 @@ def project_players(
     row: dict,
     team: str,
     injury_index: dict,
+    use_injuries: bool,
 ) -> tuple[dict, list[str]]:
     notes: list[str] = []
     recent_games = games[-4:]
@@ -706,7 +742,11 @@ def project_players(
             if item["id"] not in recent_order
         ]
         ranked = [passers[item_id] for item_id in ranked_ids if item_id in passers]
-        available = [item for item in ranked if not unavailable(injury_index, row, team, item["id"])]
+        available = [
+            item
+            for item in ranked
+            if not unavailable(injury_index, row, team, item["id"], use_injuries)
+        ]
         leader = ranked[0]
         starter = available[0] if available else None
         if starter and starter["id"] != leader["id"]:
@@ -745,7 +785,11 @@ def project_players(
             if item["id"] not in recent_order
         ]
         ranked = [next(item for item in pool if item["id"] == item_id) for item_id in ranked_ids if any(item["id"] == item_id for item in pool)]
-        available = [item for item in ranked if not unavailable(injury_index, row, team, item["id"])]
+        available = [
+            item
+            for item in ranked
+            if not unavailable(injury_index, row, team, item["id"], use_injuries)
+        ]
         leader = ranked[0]
         lead = available[0] if available else None
         if lead and lead["id"] != leader["id"]:
@@ -806,8 +850,9 @@ def update_after_game(row, ratings, epa_lookup, recent, player_index) -> None:
         stats = epa_lookup.get((row["season"], row["game_id"], team))
         allowed = epa_lookup.get((row["season"], row["game_id"], opponent))
         if stats and allowed:
-            off_epa, plays = stats
-            ratings[team].update(off_epa, allowed[0], plays)
+            off_epa, off_plays = stats
+            def_epa, def_plays = allowed
+            ratings[team].update(off_epa, def_epa, off_plays, def_plays)
         rows = player_index.get((row["season"], row["week"], team), [])
         recent[team].append(
             {
@@ -904,18 +949,20 @@ def summarize(games: list[dict]) -> dict:
             actual = game["actual"]
             pred = game["prediction"]
             margin = actual["margin"]
-            if margin > 0 and pred["homeWinProb"] >= 0.5:
+            away_win_prob = 1.0 - pred["homeWinProb"] - pred["tieProb"]
+            picked_home = pred["homeWinProb"] >= away_win_prob
+            if margin > 0 and picked_home:
                 correct += 1
-            elif margin < 0 and pred["homeWinProb"] < 0.5:
+            elif margin < 0 and not picked_home:
                 correct += 1
             elif margin == 0:
                 correct += 0.5
             decided += 1
-            margin_err.append(abs(margin - (pred["homeScore"] - pred["awayScore"])))
+            margin_err.append(abs(margin - (-pred["spreadHome"])))
             total_err.append(abs(actual["total"] - pred["total"]))
             outcome = 1.0 if margin > 0 else 0.0 if margin < 0 else 0.5
             brier.append((pred["homeWinProb"] - outcome) ** 2)
-            if game["postedHomeWinProb"] is not None and margin != 0:
+            if game["postedHomeWinProb"] is not None:
                 market.append((game["postedHomeWinProb"] - outcome) ** 2)
             home_low, home_high = pred["homeRange"]
             away_low, away_high = pred["awayRange"]

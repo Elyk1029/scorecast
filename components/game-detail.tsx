@@ -29,6 +29,13 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
         </Link>
         <div className="flex gap-1.5">
           {game.neutral ? <Badge variant="outline">Neutral site</Badge> : null}
+          <Badge variant="outline" className="border-forecast/40 text-forecast">
+            {game.recordKind === "backtest"
+              ? "Walk-forward backtest"
+              : game.locked
+                ? "Locked forecast"
+                : "Provisional"}
+          </Badge>
           <Badge
             variant="outline"
             className={final ? "border-actual/40 text-actual" : "border-uncertainty/50 text-uncertainty"}
@@ -83,12 +90,16 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
       </dl>
 
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-        {percent(game.prediction.homeWinProb)} is the calibrated chance {home} wins.
+        {percent(game.prediction.homeWinProb)} is the calibrated chance {home} wins;{" "}
+        {percent(awayWinProb(game))} is the chance {away} wins
+        {game.prediction.tieProb > 0
+          ? `; ${percent(game.prediction.tieProb)} is the final-tie chance`
+          : ""}.
         {game.prediction.overtime
-          ? " Regulation rounds to a tie, so the score adds the usual overtime field goal. The chance stays close to even, because overtime is nearly a coin flip, and about one overtime in ten still ends tied."
+          ? " The rounded score is level, so overtime is likely; the probabilities already account for it."
           : ""}{" "}
-        The spread matches that score and is not shrunk. Probability is pulled toward 50%
-        because those margins have been too sharp in the backtest.
+        The spread uses the unrounded expected margin. Probability is pulled toward 50%
+        because raw margins have been too sharp in the backtest.
       </p>
 
       {final && miss != null ? (
@@ -129,13 +140,15 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
 }
 
 function favoriteProb(game: Game) {
-  return game.prediction.homeWinProb >= 0.5
-    ? game.prediction.homeWinProb
-    : 1 - game.prediction.homeWinProb
+  return Math.max(game.prediction.homeWinProb, awayWinProb(game))
 }
 
 function favoriteAbbr(game: Game) {
-  return game.prediction.homeWinProb >= 0.5 ? game.home : game.away
+  return game.prediction.homeWinProb >= awayWinProb(game) ? game.home : game.away
+}
+
+function awayWinProb(game: Game) {
+  return 1 - game.prediction.homeWinProb - game.prediction.tieProb
 }
 
 function ScoreBlock({

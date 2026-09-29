@@ -10,17 +10,23 @@ export const metadata: Metadata = {
 export default function AccuracyPage() {
   const file = getSeason();
   const overall = file.accuracy.overall;
+  const backtestGames = file.weeks.flatMap((week) => week.games).filter(
+    (game) => game.status === "final" && game.recordKind === "backtest",
+  ).length;
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Record"
         title="Checked, then updated"
-        lede={`Each game was scored with ratings from games already played. ${overall.games} finished games are in the record, including 2023 as the warm-up season. The board itself starts in 2024. Straight-up ${(overall.straightUp * 100).toFixed(1)}%, margin MAE ${overall.marginMae.toFixed(2)}, Brier ${overall.brier.toFixed(3)}.`}
+        lede={`Each game was scored with ratings from earlier weeks. ${overall.games} finished games are in the inspectable record, beginning in 2024. The 2023 season warms up the ratings but is not counted. Straight-up ${(overall.straightUp * 100).toFixed(1)}%, margin MAE ${overall.marginMae.toFixed(2)}, Brier ${overall.brier.toFixed(3)}.`}
       />
       <AccuracyView overall={file.accuracy.overall} bySeason={file.accuracy.bySeason} />
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
         A coin flip on this Brier is 0.250. The posted-line number, when the file has a price, is the no-vig nflverse moneyline. It has been sharper than Yardline. That comparison is here so the record stays honest. It is not a claim that the model beats the market.
+        {backtestGames > 0
+          ? ` ${backtestGames} games are labeled walk-forward backtests rather than live-published forecasts.`
+          : ""}
       </p>
     </div>
   );

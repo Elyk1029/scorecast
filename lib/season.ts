@@ -57,14 +57,16 @@ export function contextLine(game: Game) {
 export function sideResult(game: Game): "hit" | "miss" | "tie" | null {
   if (!game.actual) return null
   if (game.actual.margin === 0) return "tie"
-  const pickedHome = game.prediction.homeWinProb >= 0.5
+  const awayWinProb =
+    1 - game.prediction.homeWinProb - game.prediction.tieProb
+  const pickedHome = game.prediction.homeWinProb >= awayWinProb
   const homeWon = game.actual.margin > 0
   return pickedHome === homeWon ? "hit" : "miss"
 }
 
 export function marginMiss(game: Game) {
   if (!game.actual) return null
-  const predicted = game.prediction.homeScore - game.prediction.awayScore
+  const predicted = -game.prediction.spreadHome
   return Math.abs(game.actual.margin - predicted)
 }
 
@@ -90,11 +92,11 @@ export function spreadText(game: Game) {
 }
 
 export function favoriteSide(game: Game) {
-  const margin = game.prediction.homeScore - game.prediction.awayScore
-  const even = Math.abs(game.prediction.homeWinProb - 0.5) < 0.0005
-  const home = even ? margin >= 0 : game.prediction.homeWinProb >= 0.5
+  const awayWinProb =
+    1 - game.prediction.homeWinProb - game.prediction.tieProb
+  const home = game.prediction.homeWinProb >= awayWinProb
   return {
     abbr: home ? game.home : game.away,
-    prob: home ? game.prediction.homeWinProb : 1 - game.prediction.homeWinProb,
+    prob: home ? game.prediction.homeWinProb : awayWinProb,
   }
 }

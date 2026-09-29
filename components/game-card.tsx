@@ -34,6 +34,20 @@ export function GameCard({ game, teams }: { game: Game; teams: Record<string, Te
               <Badge
                 variant="outline"
                 className={
+                  game.locked
+                    ? "border-forecast/40 text-forecast"
+                    : "border-muted-foreground/30 text-muted-foreground"
+                }
+              >
+                {game.recordKind === "backtest"
+                  ? "Backtest"
+                  : game.locked
+                    ? "Locked"
+                    : "Provisional"}
+              </Badge>
+              <Badge
+                variant="outline"
+                className={
                   final
                     ? "border-actual/40 text-actual"
                     : "border-uncertainty/50 text-uncertainty"

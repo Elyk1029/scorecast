@@ -27,19 +27,22 @@ export default function MethodPage() {
 
       <div className="max-w-2xl space-y-6 text-sm leading-6">
         <Section title="Past games only">
-          Ratings are expected points added per play on offense, and EPA allowed on defense. They update after a game is final, so the forecast for that game never saw its own result. A new season starts at 55% of last year's rating, with about 80 plays of memory. Three games are enough to outweigh that carry-in. One game is not.
+          Ratings are expected points added per play on offense, and EPA allowed on defense. The entire week is forecast before any result from that week updates a rating. A new season starts at 55% of last year’s rating, with about 80 plays of memory. Three games are enough to outweigh that carry-in. One game is not.
         </Section>
         <Section title="The score">
-          Each offense is added to what the other defense allows. A defense that allows more EPA raises the opponent's score. A defense that allows less lowers it. About 60 plays turn that gap into a point margin. A league-average total sits near 45 and moves when both offenses are good or both are bad. The published score is that mean, rounded. The slate band on the game page is 18 points either side of that score. Both teams landed inside that window in about four of five past games. The mean itself is not shrunk.
+          Each offense is added to what the other defense allows. A defense that allows more EPA raises the opponent’s score. A defense that allows less lowers it. About 60 plays turn that gap into a point margin. A league-average total sits near 45 and moves when both offenses are good or both are bad. The published score is that mean, rounded. The model spread keeps the unrounded margin. The slate band on the game page is 18 points either side of the mean.
+        </Section>
+        <Section title="Locked forecasts">
+          A week becomes locked when it is the current slate. Later refreshes add the scoreboard but keep its score, probability, players, context, and comparison line unchanged. Future weeks are provisional. Older reconstructed games are labeled as backtests rather than pretending they were published live.
         </Section>
         <Section title="Home field">
           Home field is a single number, currently {formatSigned(file.homeField)} points, fit from earlier games the model has already scored. Neutral sites get none of it. It is one row on the game sheet, not a secret factor.
         </Section>
         <Section title="Quarterback">
-          If the recent starter is out or doubtful, that team is docked 3.5 points. Questionable is written down and does not change the score. The uncertain part stays in the band.
+          If the recent starter is out or doubtful before an upcoming game, that team is docked 3.5 points. Questionable is written down and does not change the score. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
         </Section>
         <Section title="Win probability">
-          The expected margin is read as a normal curve with a standard deviation of 13.5 points, then pulled most of the way back toward 50%. An unshrunk probability scored worse than a coin flip because the score margins are sharper than the historical win rate. A double-digit spread can sit next to a chance in the mid-50s. That is the calibration, not a second score. If regulation rounds to a tie, the published score adds a field goal for the team with the higher unrounded mean. Regular-season overtime is 10 minutes. That field goal is the usual finish, not a sure one. About one overtime in ten is still tied when time expires. A dead heat on a neutral field stays level, because neither side has earned the kick.
+          The expected margin is read as a normal curve with a standard deviation of 13.5 points, then pulled most of the way back toward 50%. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
         </Section>
         <Section title="Player lines">
           Quarterback attempts and running back carries follow recent volume, shrunk toward a typical week. Yards are that volume times a shrunk per-play rate. The bar is a fixed window around the median, about eight attempts, 70 passing yards, five carries, and 32 rushing yards either side. If the leader is out or doubtful, the line moves to the next player with enough recent work. Only an unavailable quarterback changes the team score, by 3.5 points. It is not a sportsbook prop and not a full player simulation.
