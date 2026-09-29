@@ -5,7 +5,7 @@ import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { formatGenerated, formatPoints, formatSigned, formatTime, percent } from "@/lib/format"
+import { formatDate, formatGenerated, formatPoints, formatSigned, formatTime, percent } from "@/lib/format"
 import { marginMiss, sideResult, spreadText, teamName, totalMiss } from "@/lib/season"
 import type { ActualSide, Game, QuarterbackLine, RusherLine, SeasonFile, SidePlayers } from "@/lib/types"
 import { cn } from "cn"
@@ -47,7 +47,7 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
 
       <header className="space-y-2">
         <p className="text-xs font-medium tracking-[0.18em] text-forecast uppercase">
-          {game.weekday} · {formatTime(game.time)}
+          {formatDate(game.date, game.weekday)} · {formatTime(game.time)}
         </p>
         <h1 className="font-display text-4xl leading-none tracking-tight sm:text-5xl">
           {file.teams[game.away]?.name ?? game.away} at {file.teams[game.home]?.name ?? game.home}

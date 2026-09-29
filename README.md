@@ -29,7 +29,7 @@ Then open [http://localhost:43123](http://localhost:43123).
 
 Vercel builds the Next.js app only. It serves the committed `data/season.json`.
 
-A GitHub Action in `.github/workflows/refresh.yml` rebuilds `data/season.json` every Tuesday and on manual dispatch. It runs model tests, validates the JSON, and builds the website before committing. If the file changed, the action pushes it to `main`, which makes Vercel redeploy. Do not add a Python build step on Vercel.
+A GitHub Action in `.github/workflows/refresh.yml` refreshes results after Thursday, Sunday, and Monday night games, then locks the next slate on Tuesday afternoon. It can also run manually. The workflow runs model tests, validates the JSON, and builds the website before committing. If the file changed, it pushes to `main`, which makes Vercel redeploy. Do not add a Python build step on Vercel.
 
 ## Scripts
 

@@ -3,7 +3,11 @@ name: Refresh forecast
 on:
   workflow_dispatch:
   schedule:
-    # Tuesday 16:00 UTC, after the weekend slate is usually in the nflverse files.
+    # Post-game scoreboard refreshes after Thursday, Sunday, and Monday nights.
+    - cron: "0 6 * * 1"
+    - cron: "0 6 * * 2"
+    - cron: "0 6 * * 5"
+    # Lock the next slate on Tuesday after nflverse has usually caught up.
     - cron: "0 16 * * 2"
 
 permissions:
