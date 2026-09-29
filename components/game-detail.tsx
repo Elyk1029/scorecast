@@ -5,7 +5,7 @@ import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { formatPoints, formatSigned, formatTime, percent } from "@/lib/format"
+import { formatGenerated, formatPoints, formatSigned, formatTime, percent } from "@/lib/format"
 import { marginMiss, sideResult, spreadText, teamName, totalMiss } from "@/lib/season"
 import type { ActualSide, Game, QuarterbackLine, RusherLine, SeasonFile, SidePlayers } from "@/lib/types"
 import { cn } from "cn"
@@ -55,6 +55,15 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
         <p className="text-sm text-muted-foreground">
           {away} @ {home}
           {game.stadium ? ` · ${game.stadium}` : ""}
+        </p>
+        <p className="text-xs tracking-wide text-uncertainty uppercase">
+          {game.recordKind === "backtest"
+            ? "Walk-forward backtest"
+            : game.locked
+              ? "Published forecast"
+              : "Provisional forecast"}{" "}
+          · {game.forecastModelVersion}
+          {game.forecastedAt ? ` · locked ${formatGenerated(game.forecastedAt)}` : ""}
         </p>
       </header>
 

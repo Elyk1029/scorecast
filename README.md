@@ -4,17 +4,20 @@ Yardline is a weekly NFL forecast you can check against the scoreboard. It publi
 
 The site is research. It is for adults 21+ where wagering is legal, and it is not a bet recommendation. Weather and travel are shown as context and do not move the score. There is no live odds feed. The posted line, when one is stored, comes from nflverse and is a comparison, not a model input.
 
-Forecasts are built in Python from games already played and written to `data/season.json`. The Next.js app only reads that file. The model does not run on Vercel.
+Forecasts are built in Python from games already played and written to `data/season.json`. The current week is locked: later refreshes add results without rewriting what was published. Older reconstructed games are labeled as backtests, and future weeks remain provisional. The Next.js app only reads the JSON file; the model does not run on Vercel.
 
 ## Run locally
 
 ```bash
 npm install
-python -m model.build
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m model.build
+.venv/bin/python -m model.validate
 npm run dev -- -p 43123
 ```
 
-`python -m model.build` needs the packages in `requirements.txt` (a virtualenv is fine). It rewrites `data/season.json`. Then open [http://localhost:43123](http://localhost:43123).
+Then open [http://localhost:43123](http://localhost:43123).
 
 ## Deploy
 
@@ -26,7 +29,7 @@ npm run dev -- -p 43123
 
 Vercel builds the Next.js app only. It serves the committed `data/season.json`.
 
-A GitHub Action in `.github/workflows/refresh.yml` rebuilds `data/season.json` every Tuesday and on manual dispatch. If the file changed, the action commits it and pushes to `main`, which is what makes Vercel redeploy. Do not add a Python build step on Vercel.
+A GitHub Action in `.github/workflows/refresh.yml` rebuilds `data/season.json` every Tuesday and on manual dispatch. It runs model tests, validates the JSON, and builds the website before committing. If the file changed, the action pushes it to `main`, which makes Vercel redeploy. Do not add a Python build step on Vercel.
 
 ## Scripts
 
