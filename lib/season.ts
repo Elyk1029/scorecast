@@ -49,12 +49,9 @@ export function gamesByDate(games: Game[]) {
 
 export function contextLine(game: Game) {
   if (game.context[0]) return game.context[0]
-  const matchup = game.adjustments.find((item) => item.label === "Matchup")
   const field = game.adjustments.find((item) => item.label === "Home field")
-  if (matchup && field) {
-    return `Matchup ${formatSigned(matchup.points)} and home field ${formatSigned(field.points)}.`
-  }
-  return matchup?.detail ?? "Built from games already played."
+  if (field) return `Home field ${formatSigned(field.points)}.`
+  return game.adjustments[0]?.detail ?? "Built from games already played."
 }
 
 export function sideResult(game: Game): "hit" | "miss" | "tie" | null {
@@ -93,7 +90,9 @@ export function spreadText(game: Game) {
 }
 
 export function favoriteSide(game: Game) {
-  const home = game.prediction.homeWinProb >= 0.5
+  const margin = game.prediction.homeScore - game.prediction.awayScore
+  const even = Math.abs(game.prediction.homeWinProb - 0.5) < 0.0005
+  const home = even ? margin >= 0 : game.prediction.homeWinProb >= 0.5
   return {
     abbr: home ? game.home : game.away,
     prob: home ? game.prediction.homeWinProb : 1 - game.prediction.homeWinProb,

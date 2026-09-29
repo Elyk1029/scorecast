@@ -32,7 +32,7 @@ SEASONS = [2023, 2024, 2025, 2026]
 PUBLISH_FROM = 2024
 PLAYS = 60.0
 SIMS = 2500
-MODEL_VERSION = "yardline-1.3"
+MODEL_VERSION = "yardline-1.4"
 # Plays of memory carried into a new season. About one or two games, so a
 # three-game stretch can outweigh last year without letting one Sunday rewrite it.
 SEASON_PRIOR_PLAYS = 80.0
@@ -588,7 +588,10 @@ def forecast_game(
         "adjustments": adjustments,
         "context": context,
         "xfactor": xfactor,
-        "postedSpreadHome": row["spread_line"],
+        # nflverse spread_line is positive when the home team is favored. It
+        # matches the home moneyline in every 2024-2026 game checked. Store the
+        # betting number instead: negative means the home team is favored.
+        "postedSpreadHome": None if row["spread_line"] is None else -float(row["spread_line"]),
         "postedTotal": row["total_line"],
         "postedHomeWinProb": (
             None
@@ -628,17 +631,18 @@ def quarterback_adjustment(
 
 
 def lead_passer(games: list[dict]) -> dict | None:
-    totals: dict[str, dict] = {}
-    for game in games[-4:]:
-        for player in game["passers"]:
-            item = totals.setdefault(
-                player["player_id"],
-                {"player_id": player["player_id"], "name": player["name"], "attempts": 0},
-            )
-            item["attempts"] += player["attempts"] or 0
-    if not totals:
-        return None
-    return max(totals.values(), key=lambda item: item["attempts"])
+    """Passer who just played, not the four-game attempt leader.
+
+    A four-game sum keeps last month's starter on the card after a change.
+    The last game's attempt leader is the walk-forward starter.
+    """
+    for game in reversed(games[-4:]):
+        if not game["passers"]:
+            continue
+        leader = max(game["passers"], key=lambda player: player["attempts"] or 0)
+        if (leader["attempts"] or 0) > 0:
+            return leader
+    return None
 
 
 def unavailable(injury_index: dict, row: dict, team: str, player_id: str) -> bool:
@@ -664,10 +668,11 @@ def project_players(
         for player in game["passers"]:
             item = passers.setdefault(
                 player["player_id"],
-                {"id": player["player_id"], "name": player["name"], "attempts": 0, "yards": 0},
+                {"id": player["player_id"], "name": player["name"], "attempts": 0, "yards": 0, "games": 0},
             )
             item["attempts"] += player["attempts"] or 0
             item["yards"] += player["passing_yards"] or 0
+            item["games"] += 1
         for player in game["rushers"]:
             if player["position"] not in {"RB", "FB", "QB"}:
                 continue
@@ -679,14 +684,28 @@ def project_players(
                     "position": player["position"],
                     "carries": 0,
                     "yards": 0,
+                    "games": 0,
                 },
             )
             item["carries"] += player["carries"] or 0
             item["yards"] += player["rushing_yards"] or 0
+            item["games"] += 1
 
     qb = None
     if passers:
-        ranked = sorted(passers.values(), key=lambda item: item["attempts"], reverse=True)
+        recent_order: list[str] = []
+        for game in reversed(recent_games):
+            if not game["passers"]:
+                continue
+            leader = max(game["passers"], key=lambda player: player["attempts"] or 0)
+            if (leader["attempts"] or 0) <= 0 or leader["player_id"] in recent_order:
+                continue
+            recent_order.append(leader["player_id"])
+        ranked_ids = recent_order + [
+            item["id"] for item in sorted(passers.values(), key=lambda item: item["attempts"], reverse=True)
+            if item["id"] not in recent_order
+        ]
+        ranked = [passers[item_id] for item_id in ranked_ids if item_id in passers]
         available = [item for item in ranked if not unavailable(injury_index, row, team, item["id"])]
         leader = ranked[0]
         starter = available[0] if available else None
@@ -694,8 +713,8 @@ def project_players(
             notes.append(
                 f"{leader['name']} is out or doubtful, so the passing line is {starter['name']}."
             )
-        if starter and starter["attempts"] >= 20:
-            attempts = shrunk_rate(starter["attempts"] / max(len(recent_games), 1), 1, 32, 2)
+        if starter and starter["attempts"] >= 8:
+            attempts = shrunk_rate(starter["attempts"], starter["games"], 32, 2)
             ypa = shrunk_rate(starter["yards"], starter["attempts"], 7.0, 80)
             yards = attempts * ypa
             qb = {
@@ -712,7 +731,20 @@ def project_players(
     ball_carriers = [item for item in rushers.values() if item["position"] in {"RB", "FB"}]
     pool = ball_carriers or list(rushers.values())
     if pool:
-        ranked = sorted(pool, key=lambda item: item["carries"], reverse=True)
+        recent_order = []
+        for game in reversed(recent_games):
+            backs = [player for player in game["rushers"] if player["position"] in {"RB", "FB"}] or game["rushers"]
+            if not backs:
+                continue
+            leader = max(backs, key=lambda player: player["carries"] or 0)
+            if (leader["carries"] or 0) <= 0 or leader["player_id"] in recent_order:
+                continue
+            recent_order.append(leader["player_id"])
+        ranked_ids = recent_order + [
+            item["id"] for item in sorted(pool, key=lambda item: item["carries"], reverse=True)
+            if item["id"] not in recent_order
+        ]
+        ranked = [next(item for item in pool if item["id"] == item_id) for item_id in ranked_ids if any(item["id"] == item_id for item in pool)]
         available = [item for item in ranked if not unavailable(injury_index, row, team, item["id"])]
         leader = ranked[0]
         lead = available[0] if available else None
@@ -720,8 +752,8 @@ def project_players(
             notes.append(
                 f"{leader['name']} is out or doubtful, so the rushing line is {lead['name']}."
             )
-        if lead and lead["carries"] >= 10:
-            carries = shrunk_rate(lead["carries"] / max(len(recent_games), 1), 1, 14, 2)
+        if lead and lead["carries"] >= 5:
+            carries = shrunk_rate(lead["carries"], lead["games"], 14, 2)
             ypc = shrunk_rate(lead["yards"], lead["carries"], 4.3, 40)
             yards = carries * ypc
             rb = {

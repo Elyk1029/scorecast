@@ -74,7 +74,7 @@ function ariaLabel(
   actual: number | null | undefined,
   digits: number,
 ) {
-  const base = `${label} 10th ${formatStat(low, digits)}, median ${formatStat(median, digits)}, 90th ${formatStat(high, digits)}`
+  const base = `${label} low ${formatStat(low, digits)}, median ${formatStat(median, digits)}, high ${formatStat(high, digits)}`
   if (actual == null) return base
   return `${base}, actual ${formatStat(actual, digits === 0 ? 0 : digits)}`
 }
