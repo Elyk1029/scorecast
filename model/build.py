@@ -32,7 +32,10 @@ SEASONS = [2023, 2024, 2025, 2026]
 PUBLISH_FROM = 2024
 PLAYS = 60.0
 SIMS = 2500
-MODEL_VERSION = "yardline-1.1"
+MODEL_VERSION = "yardline-1.2"
+# Plays of memory carried into a new season. About one or two games, so a
+# three-game stretch can outweigh last year without letting one Sunday rewrite it.
+SEASON_PRIOR_PLAYS = 80.0
 # Score means stay. A normal on the margin is still too confident for this
 # model's historical win rate, so the published probability is pulled toward 0.5.
 MARGIN_SD = 13.5
@@ -79,8 +82,8 @@ class Rating:
     def __init__(self) -> None:
         self.off = 0.0
         self.defn = 0.0
-        self.off_n = 150.0
-        self.def_n = 150.0
+        self.off_n = SEASON_PRIOR_PLAYS
+        self.def_n = SEASON_PRIOR_PLAYS
         self.games = 0
 
     def snapshot(self) -> dict[str, float]:
@@ -89,8 +92,8 @@ class Rating:
     def regress_season(self) -> None:
         self.off *= 0.55
         self.defn *= 0.55
-        self.off_n = 150.0
-        self.def_n = 150.0
+        self.off_n = SEASON_PRIOR_PLAYS
+        self.def_n = SEASON_PRIOR_PLAYS
         self.games = 0
 
     def update(self, off_epa: float, def_epa: float, plays: float) -> None:
@@ -410,12 +413,12 @@ def forecast_game(
     field = 0.0 if neutral else home_field
     home_rating = ratings[home]
     away_rating = ratings[away]
-    raw_margin = PLAYS * (
-        (home_rating.off - away_rating.defn) - (away_rating.off - home_rating.defn)
-    )
-    base_total = 45.0 + PLAYS * (
-        (home_rating.off - away_rating.defn) + (away_rating.off - home_rating.defn)
-    )
+    # defn is EPA allowed. Higher means a worse defense, so it adds to the
+    # opponent's expected EPA. Subtracting it counted a leaky defense as a strength.
+    home_epa = home_rating.off + away_rating.defn
+    away_epa = away_rating.off + home_rating.defn
+    raw_margin = PLAYS * (home_epa - away_epa)
+    base_total = 45.0 + PLAYS * (home_epa + away_epa)
     base_total = float(np.clip(base_total, 32, 60))
 
     qb_note, qb_home_points, qb_away_points = quarterback_adjustment(
@@ -436,13 +439,23 @@ def forecast_game(
 
     adjustments = [
         {
-            "label": "Matchup",
-            "points": round(raw_margin, 1),
+            "label": f"{TEAMS[home][1]} offense",
+            "points": round(PLAYS * home_epa, 1),
             "detail": (
-                f"{TEAMS[home][1]} offense {home_rating.off:+.2f} EPA/play versus "
-                f"{TEAMS[away][1]} defense allowing {away_rating.defn:+.2f}."
+                f"{TEAMS[home][1]} offense {home_rating.off:+.2f} EPA/play "
+                f"against a {TEAMS[away][1]} defense allowing {away_rating.defn:+.2f}. "
+                "Allowing more EPA raises the opponent's score."
             ),
-        }
+        },
+        {
+            "label": f"{TEAMS[away][1]} offense",
+            "points": round(-PLAYS * away_epa, 1),
+            "detail": (
+                f"{TEAMS[away][1]} offense {away_rating.off:+.2f} EPA/play "
+                f"against a {TEAMS[home][1]} defense allowing {home_rating.defn:+.2f}. "
+                "Shown from the home side, so a weak day for this offense adds to the home margin."
+            ),
+        },
     ]
     if not neutral:
         adjustments.append(
@@ -472,8 +485,14 @@ def forecast_game(
         "awayRange": score_band(away_mean),
         "rawMargin": round(raw_margin, 2),
     }
-    home_players = project_players(recent.get(home, []), "home")
-    away_players = project_players(recent.get(away, []), "away")
+    home_players, home_player_notes = project_players(
+        recent.get(home, []), row, home, injury_index
+    )
+    away_players, away_player_notes = project_players(
+        recent.get(away, []), row, away, injury_index
+    )
+    context.extend(home_player_notes)
+    context.extend(away_player_notes)
     actual = None
     status = "upcoming"
     if row["home_score"] is not None and row["away_score"] is not None:
@@ -560,7 +579,18 @@ def lead_passer(games: list[dict]) -> dict | None:
     return max(totals.values(), key=lambda item: item["attempts"])
 
 
-def project_players(games: list[dict], _side: str) -> dict:
+def unavailable(injury_index: dict, row: dict, team: str, player_id: str) -> bool:
+    status = injury_index.get((row["season"], row["week"], team, player_id))
+    return status in {"Out", "Doubtful"}
+
+
+def project_players(
+    games: list[dict],
+    row: dict,
+    team: str,
+    injury_index: dict,
+) -> tuple[dict, list[str]]:
+    notes: list[str] = []
     recent_games = games[-4:]
     passers: dict[str, dict] = {}
     rushers: dict[str, dict] = {}
@@ -594,8 +624,15 @@ def project_players(games: list[dict], _side: str) -> dict:
 
     qb = None
     if passers:
-        starter = max(passers.values(), key=lambda item: item["attempts"])
-        if starter["attempts"] >= 20:
+        ranked = sorted(passers.values(), key=lambda item: item["attempts"], reverse=True)
+        available = [item for item in ranked if not unavailable(injury_index, row, team, item["id"])]
+        leader = ranked[0]
+        starter = available[0] if available else None
+        if starter and starter["id"] != leader["id"]:
+            notes.append(
+                f"{leader['name']} is out or doubtful, so the passing line is {starter['name']}."
+            )
+        if starter and starter["attempts"] >= 20:
             attempts = shrunk_rate(starter["attempts"] / max(len(recent_games), 1), 1, 32, 2)
             ypa = shrunk_rate(starter["yards"], starter["attempts"], 7.0, 80)
             yards = attempts * ypa
@@ -613,8 +650,15 @@ def project_players(games: list[dict], _side: str) -> dict:
     ball_carriers = [item for item in rushers.values() if item["position"] in {"RB", "FB"}]
     pool = ball_carriers or list(rushers.values())
     if pool:
-        lead = max(pool, key=lambda item: item["carries"])
-        if lead["carries"] >= 10:
+        ranked = sorted(pool, key=lambda item: item["carries"], reverse=True)
+        available = [item for item in ranked if not unavailable(injury_index, row, team, item["id"])]
+        leader = ranked[0]
+        lead = available[0] if available else None
+        if lead and lead["id"] != leader["id"]:
+            notes.append(
+                f"{leader['name']} is out or doubtful, so the rushing line is {lead['name']}."
+            )
+        if lead and lead["carries"] >= 10:
             carries = shrunk_rate(lead["carries"] / max(len(recent_games), 1), 1, 14, 2)
             ypc = shrunk_rate(lead["yards"], lead["carries"], 4.3, 40)
             yards = carries * ypc
@@ -628,7 +672,7 @@ def project_players(games: list[dict], _side: str) -> dict:
                 "low": max(0, round(yards - 32)),
                 "high": round(yards + 32),
             }
-    return {"qb": qb, "rb": rb}
+    return {"qb": qb, "rb": rb}, notes
 
 
 def actual_players(player_index, row, home_proj, away_proj) -> dict:
