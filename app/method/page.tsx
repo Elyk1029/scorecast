@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
 import { Separator } from "@/components/ui/separator";
-import { formatGenerated, formatSigned } from "@/lib/format";
+import { formatGenerated, formatRate, formatSigned } from "@/lib/format";
+import { disagreementRecord } from "@/lib/price-check";
 import { getSeason } from "@/lib/season";
 
 export const metadata: Metadata = {
@@ -12,6 +13,9 @@ export const metadata: Metadata = {
 
 export default function MethodPage() {
   const file = getSeason();
+  const finished = file.weeks.flatMap((week) => week.games).filter((game) => game.actual != null);
+  const modest = disagreementRecord(finished, 0.03);
+  const large = disagreementRecord(finished, 0.08);
 
   return (
     <div className="space-y-6">
@@ -52,6 +56,9 @@ export default function MethodPage() {
         </Section>
         <Section title="What does not move the score">
           Raw team EPA, weather, roof, and travel across time zones are context in this version. Team EPA is worth zero points because adding it did not improve the held-out margin and win metrics; the separately tested quarterback-form feature does use passing EPA. An early East Coast body-clock spot, or wind at 20 mph or more, can show up as an X-factor, also worth zero, until that idea earns a backtest. If it is on the card and it is not in the adjustment list, it did not change the number.
+        </Section>
+        <Section title="What the research changed">
+          The joint score cloud was tested as a replacement win probability, which is the Dixon-Coles idea of one distribution for both scores. On these {finished.length.toLocaleString()} finished games it scored 0.226 Brier. The calibrated margin model scored 0.217, and the posted price scored 0.208. Mixing the cloud into the calibrated probability did not help, so the win probability is unchanged. Picking a spread side from that cloud landed about 50% of the time, and a total side landed about 48%. A −110 price needs about 52.4% to break even, so those rules are not in the model. The comparison that remains is the no-vig moneyline. A gap of at least 3 points, {modest.games.toLocaleString()} games, happened {formatRate(modest.hitRate)} of the time against a price of {formatRate(modest.priceRate)}. A gap of at least 8 points, {large.games.toLocaleString()} games, happened {formatRate(large.hitRate)} against a price of {formatRate(large.priceRate)}. Yardline does not mark a recommended play.
         </Section>
         <Section title="The posted line">
           Spread, total, and the no-vig price from nflverse are stored beside the forecast so the record can be compared. They are not model inputs. They are not a live sportsbook. On the{" "}

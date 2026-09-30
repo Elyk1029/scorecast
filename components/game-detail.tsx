@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { GamePriceLine } from "@/components/price-check"
 import { RangeBar, RangeLegend } from "@/components/range-bar"
 import { Badge } from "@/components/ui/badge"
 import { buttonVariants } from "@/components/ui/button"
@@ -132,7 +133,7 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
             <TabsTrigger value="players">Players</TabsTrigger>
           </TabsList>
           <TabsContent value="sheet" className="mt-4">
-            <ForecastSheet game={game} />
+            <ForecastSheet game={game} file={file} />
           </TabsContent>
           <TabsContent value="players" className="mt-4">
             <PlayerSheet game={game} file={file} />
@@ -141,7 +142,7 @@ export function GameDetail({ game, file }: { game: Game; file: SeasonFile }) {
       </div>
 
       <div className="hidden gap-6 md:grid md:grid-cols-2">
-        <ForecastSheet game={game} />
+        <ForecastSheet game={game} file={file} />
         <PlayerSheet game={game} file={file} />
       </div>
     </article>
@@ -268,7 +269,7 @@ const KEY_MARGIN_NOTE: Record<number, string> = {
   4: "Touchdown minus a field goal",
 }
 
-function ForecastSheet({ game }: { game: Game }) {
+function ForecastSheet({ game, file }: { game: Game; file: SeasonFile }) {
   return (
     <div className="space-y-4">
       {game.scoreShape ? <ScoreShapeCard game={game} /> : null}
@@ -363,6 +364,7 @@ function ForecastSheet({ game }: { game: Game }) {
                   ? "No no-vig home price in the file."
                   : `No-vig home price ${percent(game.postedHomeWinProb)}. Negative spread means the home team was favored in that file.`}
               </p>
+              <GamePriceLine game={game} file={file} />
             </>
           )}
         </CardContent>

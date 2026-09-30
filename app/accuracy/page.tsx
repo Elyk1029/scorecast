@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AccuracyView, PlayerLineComparisonCard } from "@/components/accuracy-view";
+import { PriceRecordCard } from "@/components/price-check";
 import { PageHeader } from "@/components/page-header";
 import { getSeason } from "@/lib/season";
 
@@ -23,6 +24,7 @@ export default function AccuracyPage() {
       />
       <AccuracyView overall={file.accuracy.overall} bySeason={file.accuracy.bySeason} />
       <PlayerLineComparisonCard lines={file.playerLines} />
+      <PriceRecordCard file={file} />
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
         A coin flip on this Brier is 0.250. The posted-line number, when the file has a price, is the no-vig nflverse moneyline. It has been sharper than Yardline. That comparison is here so the record stays honest. It is not a claim that the model beats the market.
         {backtestGames > 0

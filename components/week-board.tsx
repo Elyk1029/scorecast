@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { GameCard } from "@/components/game-card"
+import { SlatePriceCheck } from "@/components/price-check"
 import { PageHeader } from "@/components/page-header"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -72,6 +73,8 @@ export function WeekBoard({
           )}
         </div>
       </div>
+
+      <SlatePriceCheck week={week} file={file} />
 
       {week.games.length === 0 ? (
         <Card>
