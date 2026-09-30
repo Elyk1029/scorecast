@@ -301,6 +301,99 @@ def calibrated_probs(
     return home, tie
 
 
+# Margins that draw a disproportionate share of NFL finals: field goal, touchdown,
+# two field goals, touchdown plus field goal, two touchdowns, touchdown minus field goal.
+KEY_MARGINS = (3, 7, 6, 10, 14, 4)
+# How far a prior final can sit from this forecast and still count. Narrow enough
+# that a two-touchdown forecast is not treated like a pick'em, wide enough that
+# the 3- and 7-point lattice is estimated from hundreds of games.
+SCORE_MARGIN_BAND = 7.0
+SCORE_TOTAL_BAND = 8.0
+
+
+def score_shape(
+    prediction: dict,
+    finals: list[tuple[int, int]],
+) -> dict | None:
+    """Weight earlier real finals by how close they were to this margin and total.
+
+    Each prior game keeps the score that was played, so a 3-point finish stays
+    3 points. The betting line is not an input, and the calibrated win
+    probability is left alone.
+    """
+    if len(finals) < 400:
+        return None
+    margin = prediction.get("meanMargin")
+    total = prediction.get("meanTotal")
+    if margin is None and prediction.get("spreadHome") is not None:
+        margin = -float(prediction["spreadHome"])
+    if total is None and prediction.get("total") is not None:
+        total = float(prediction["total"])
+    if margin is None or total is None:
+        return None
+    homes = np.asarray([score[0] for score in finals], dtype=float)
+    aways = np.asarray([score[1] for score in finals], dtype=float)
+    margins = homes - aways
+    totals = homes + aways
+    weights = np.exp(
+        -0.5
+        * (
+            ((margins - float(margin)) / SCORE_MARGIN_BAND) ** 2
+            + ((totals - float(total)) / SCORE_TOTAL_BAND) ** 2
+        )
+    )
+    weight_sum = float(weights.sum())
+    if weight_sum <= 0.0:
+        return None
+    absolute = np.abs(margins)
+    codes = homes.astype(np.int64) * 1000 + aways.astype(np.int64)
+    unique_codes, inverse = np.unique(codes, return_inverse=True)
+    mass = np.bincount(inverse, weights=weights)
+    order = np.argsort(-mass, kind="stable")[:4]
+    return {
+        "sample": len(finals),
+        "keyMargins": [
+            {
+                "margin": margin_key,
+                "probability": round(float(weights[absolute == margin_key].sum()) / weight_sum, 3),
+            }
+            for margin_key in KEY_MARGINS
+        ],
+        "topScores": [
+            {
+                "home": int(unique_codes[index] // 1000),
+                "away": int(unique_codes[index] % 1000),
+                "probability": round(float(mass[index]) / weight_sum, 3),
+            }
+            for index in order
+            if mass[index] > 0
+        ],
+    }
+
+
+def attach_score_shapes(
+    weeks: list[dict],
+    finals: list[tuple[int, int, int]],
+) -> None:
+    """Use only finals from seasons before the game being described."""
+    by_season: dict[int, list[tuple[int, int]]] = {}
+    for season, home_score, away_score in finals:
+        by_season.setdefault(season, []).append((home_score, away_score))
+    prior_by_season: dict[int, list[tuple[int, int]]] = {}
+    running: list[tuple[int, int]] = []
+    for season in sorted(by_season):
+        prior_by_season[season] = list(running)
+        running.extend(by_season[season])
+    for week in weeks:
+        prior = prior_by_season.get(int(week["season"]), running)
+        if len(prior) < 400:
+            continue
+        for game in week["games"]:
+            shape = score_shape(game["prediction"], prior)
+            if shape is not None:
+                game["scoreShape"] = shape
+
+
 def bounded_means(total: float, margin: float) -> tuple[float, float]:
     """Keep score, total, and margin mathematically consistent while clipping."""
     total = float(np.clip(total, 12.0, 84.0))
@@ -636,6 +729,7 @@ def main() -> None:
     previous_lines = PlayerLineScore()
     current_lines = PlayerLineScore()
     player_widths = DEFAULT_PLAYER_WIDTHS
+    score_finals: list[tuple[int, int, int]] = []
     weeks_out: list[dict] = []
     learned: list[dict] = []
     last_season = None
@@ -734,6 +828,13 @@ def main() -> None:
                             matched_player_line(player_index, row, team, legacy_players),
                         )
                 margin = float(game["actual"]["margin"])
+                score_finals.append(
+                    (
+                        season,
+                        int(game["actual"]["homeScore"]),
+                        int(game["actual"]["awayScore"]),
+                    )
+                )
                 training_rows.append(
                     {
                         "season": season,
@@ -823,6 +924,7 @@ def main() -> None:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     previous = json.loads(OUT.read_text()) if OUT.exists() else None
     freeze_published_forecasts(weeks_out, current, previous, generated_at)
+    attach_score_shapes(weeks_out, score_finals)
     accuracy_games = [
         game
         for week in weeks_out
@@ -848,6 +950,7 @@ def main() -> None:
             "Weather and travel are shown as context and do not change the score in this version.",
             "Score coefficients and win calibration are fit on completed prior seasons only.",
             "Player lines weight the last eight games and the opponent's yards per play. The previous four-game line is kept only for comparison.",
+            "The score shape weights earlier finals whose margin and total were close to this forecast, so a 3-point game stays 3 points. It is not a betting price.",
             "A rounded tie indicates likely overtime. About six percent of regular-season overtimes still end tied.",
             "A locked game keeps the forecast that was published before kickoff.",
             "This is research, not a recommendation to bet.",

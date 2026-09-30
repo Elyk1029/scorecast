@@ -41,6 +41,9 @@ export default function MethodPage() {
         <Section title="Quarterback">
           The most recent starter has a passing-EPA rating with 100 plays of league-average prior weight and offseason regression. Only information through the previous week is used. That rating enters both score equations, so it can move either team’s points, the margin, and the total. If that starter is out or doubtful before an upcoming game, the separate availability override docks the team 3.5 points. Historical backtests do not use week-level injury rows because nflverse does not provide a reliable pre-kickoff timestamp for this feed.
         </Section>
+        <Section title="Where the score lands">
+          A smooth curve treats a 3-point game like a 4-point game. NFL finals do not. Field goals are worth 3 and a touchdown with the extra point is worth 7, so margins of 3, 7, 6, 10, 14, and 4 carry more games than the numbers beside them. Yardline keeps the two team means from the score model, then weights finals from earlier seasons by how close their margin and total were to this forecast. Those finals stay whole scores, so a three-point game is not rounded into a four. The likely final and the likely margin come from that same cloud. The calibrated win probability is unchanged. The cloud is not a price, and it is not a suggestion to bet a number.
+        </Section>
         <Section title="Win probability">
           A regularized logistic calibration learns how often each fitted margin became a home win in completed prior seasons. Its training margins are out-of-season home-score minus away-score predictions, not in-sample fitted values. Home win, away win, and tie always sum to 100%. If the rounded score is level, the card flags likely overtime instead of inventing an exact overtime score. About six percent of regular-season overtimes still end tied.
         </Section>

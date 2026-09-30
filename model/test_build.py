@@ -10,6 +10,7 @@ from model.build import (
     calibrated_probs,
     empirical_player_widths,
     fit_forecast_model,
+    score_shape,
     freeze_published_forecasts,
     project_players,
     score_features,
@@ -365,6 +366,42 @@ class ForecastMathTests(unittest.TestCase):
         ready = {key: [float(index) for index in range(400)] for key in thin}
         widths = empirical_player_widths(ready)
         self.assertGreater(widths[1], 70)
+
+    def test_score_shape_keeps_a_field_goal_margin(self) -> None:
+        prediction = {
+            "meanMargin": 3.0,
+            "meanTotal": 45.0,
+            "spreadHome": -3.0,
+            "total": 45.0,
+        }
+        field_goals = [(24, 21)] * 300
+        fours = [(24, 20)] * 100
+        self.assertIsNone(score_shape(prediction, field_goals[:10]))
+        shape = score_shape(prediction, field_goals + fours)
+        self.assertIsNotNone(shape)
+        assert shape is not None
+        rates = {row["margin"]: row["probability"] for row in shape["keyMargins"]}
+        self.assertGreater(rates[3], rates[4])
+        self.assertGreater(rates[3], 0.7)
+        self.assertEqual(shape["topScores"][0]["home"], 24)
+        self.assertEqual(shape["topScores"][0]["away"], 21)
+        self.assertEqual(shape["sample"], 400)
+
+    def test_score_shape_moves_with_the_forecast_margin(self) -> None:
+        finals = [(24, 21)] * 200 + [(31, 17)] * 200
+        pick = score_shape({"meanMargin": 0.0, "meanTotal": 45.0}, finals)
+        blowout = score_shape({"meanMargin": 14.0, "meanTotal": 48.0}, finals)
+        self.assertIsNotNone(pick)
+        self.assertIsNotNone(blowout)
+        assert pick is not None and blowout is not None
+
+        def rate(shape: dict, margin: int) -> float:
+            return next(row["probability"] for row in shape["keyMargins"] if row["margin"] == margin)
+
+        self.assertGreater(rate(pick, 3), rate(pick, 14))
+        self.assertGreater(rate(blowout, 14), rate(pick, 14))
+        self.assertEqual(blowout["topScores"][0]["home"], 31)
+        self.assertEqual(blowout["topScores"][0]["away"], 17)
 
 
 if __name__ == "__main__":

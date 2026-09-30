@@ -60,6 +60,23 @@ export type ActualSide = {
   rb: ActualRb | null
 }
 
+export type KeyMargin = {
+  margin: number
+  probability: number
+}
+
+export type LikelyScore = {
+  home: number
+  away: number
+  probability: number
+}
+
+export type ScoreShape = {
+  sample: number
+  keyMargins: KeyMargin[]
+  topScores: LikelyScore[]
+}
+
 export type Prediction = {
   homeScore: number
   awayScore: number
@@ -110,6 +127,7 @@ export type Game = {
   adjustments: Adjustment[]
   context: string[]
   xfactor: XFactor | null
+  scoreShape?: ScoreShape | null
   postedSpreadHome: number | null
   postedTotal: number | null
   postedHomeWinProb: number | null

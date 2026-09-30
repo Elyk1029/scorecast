@@ -5,7 +5,7 @@ import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { formatDate, formatGenerated, formatPoints, formatSigned, formatTime, percent } from "@/lib/format"
+import { formatDate, formatGenerated, formatPoints, formatRate, formatSigned, formatTime, percent } from "@/lib/format"
 import { marginMiss, sideResult, spreadText, teamName, totalMiss } from "@/lib/season"
 import type { ActualSide, Game, QuarterbackLine, RusherLine, SeasonFile, SidePlayers } from "@/lib/types"
 import { cn } from "cn"
@@ -198,6 +198,58 @@ function ScoreBlock({
   )
 }
 
+function ScoreShapeCard({ game }: { game: Game }) {
+  const shape = game.scoreShape
+  if (!shape) return null
+  const peak = Math.max(...shape.keyMargins.map((row) => row.probability), 0.01)
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Where the score lands</CardTitle>
+        <CardDescription>
+          Earlier finals, weighted toward games whose margin and total were close to this forecast. A finish of 3 stays 3, and a finish of 7 stays 7. This is not a price and not a pick.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <ul className="space-y-2">
+          {shape.keyMargins.map((row) => (
+            <li key={row.margin} className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 text-sm">
+              <span className="tabular-nums">by {row.margin}</span>
+              <span className="h-1.5 overflow-hidden rounded-full bg-foreground/10">
+                <span
+                  className="block h-full rounded-full bg-forecast"
+                  style={{ width: `${Math.max(4, (row.probability / peak) * 100)}%` }}
+                />
+              </span>
+              <span className="text-right tabular-nums text-forecast">{formatRate(row.probability)}</span>
+              <span className="col-span-3 -mt-1 text-xs text-muted-foreground">
+                {KEY_MARGIN_NOTE[row.margin]}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <Separator />
+        <div className="space-y-1">
+          <p className="text-xs tracking-wide text-uncertainty uppercase">Most likely finals</p>
+          <ul className="space-y-1 text-sm">
+            {shape.topScores.map((score) => (
+              <li key={`${score.away}-${score.home}`} className="flex justify-between gap-3 tabular-nums">
+                <span>
+                  {game.away} {score.away}, {game.home} {score.home}
+                </span>
+                <span className="text-forecast">{formatRate(score.probability)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {shape.sample.toLocaleString()} earlier games. “By 3” means the final difference was 3, either way. The win probability above is still the calibrated one.
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl bg-card px-3 py-3 ring-1 ring-foreground/10">
@@ -207,9 +259,19 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
+const KEY_MARGIN_NOTE: Record<number, string> = {
+  3: "Field goal",
+  7: "Touchdown",
+  6: "Two field goals",
+  10: "Touchdown and a field goal",
+  14: "Two touchdowns",
+  4: "Touchdown minus a field goal",
+}
+
 function ForecastSheet({ game }: { game: Game }) {
   return (
     <div className="space-y-4">
+      {game.scoreShape ? <ScoreShapeCard game={game} /> : null}
       <Card>
         <CardHeader>
           <CardTitle>Adjustments</CardTitle>
